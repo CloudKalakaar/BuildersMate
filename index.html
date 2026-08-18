@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>BuilderMate - Construction & Contractor Management</title>
+  
+  <!-- PWA & Mobile Optimization Meta Tags -->
+  <meta name="description" content="BuilderMate - Track Inventory, Spends, Income, Labours, Projects, and Direct Sales for construction businesses and contractors." />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="BuilderMate" />
+  
+  <!-- Icons and PWA Manifest -->
+  <link rel="icon" type="image/png" href="icon.png" />
+  <link rel="apple-touch-icon" href="icon.png" />
+  <script>
+    if (location.protocol.startsWith('http')) {
+      const mLink = document.createElement('link');
+      mLink.rel = 'manifest';
+      mLink.href = 'manifest.json';
+      document.head.appendChild(mLink);
+    }
+
+    // Immediate Dark Theme Check
+    try {
+      const stored = localStorage.getItem('buildermate_data_v1');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        const savedTheme = parsed && parsed.settings && parsed.settings.theme;
+        if (savedTheme === 'dark' || (savedTheme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      }
+    } catch(e) {}
+  </script>
+
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Google Identity Services (GIS) for Google Drive Cloud Backup -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <!-- Application CSS -->
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- Mobile App Frame Container -->
+  <div class="app-container">
+    
+    <!-- PWA Add to Home Screen Banner -->
+    <div id="pwa-install-banner" class="pwa-install-banner">
+      <div class="pwa-banner-left">
+        <span>📲</span>
+        <span>Install BuilderMate for instant mobile access & offline use</span>
+      </div>
+      <div class="pwa-banner-actions">
+        <button class="btn btn-xs btn-primary" id="btn-pwa-install-action">Install</button>
+        <button class="btn-icon-dismiss" id="btn-pwa-dismiss" title="Dismiss">×</button>
+      </div>
+    </div>
+
+    <!-- Main Dynamic Tab Content Container -->
+    <main id="main-tab-content" class="main-content">
+      <!-- Dynamic Views Rendered by JS -->
+    </main>
+
+    <!-- Floating Action Button (Quick Add) -->
+    <div class="fab-container">
+      <button class="fab-btn" id="fab-quick-add" aria-label="Quick Action">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/>
+          <line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Bottom Sticky Navigation Bar -->
+    <nav class="bottom-nav">
+      <button class="bottom-nav-item active" data-tab="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <rect x="3" y="3" width="7" height="9" rx="1"/>
+          <rect x="14" y="3" width="7" height="5" rx="1"/>
+          <rect x="14" y="12" width="7" height="9" rx="1"/>
+          <rect x="3" y="16" width="7" height="5" rx="1"/>
+        </svg>
+        <span class="nav-label">Dashboard</span>
+      </button>
+
+      <button class="bottom-nav-item" data-tab="projects">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <path d="M3 21h18M3 7v14M21 7v14M6 21V11M10 21V11M14 21V11M18 21V11M3 7l9-4 9 4"/>
+        </svg>
+        <span class="nav-label">Projects</span>
+      </button>
+
+      <button class="bottom-nav-item" data-tab="inventory">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+          <line x1="12" y1="22.08" x2="12" y2="12"/>
+        </svg>
+        <span class="nav-label">Inventory</span>
+      </button>
+
+      <button class="bottom-nav-item" data-tab="direct-sales">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <circle cx="9" cy="21" r="1"/>
+          <circle cx="20" cy="21" r="1"/>
+          <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+        </svg>
+        <span class="nav-label">Sales</span>
+      </button>
+
+      <button class="bottom-nav-item" data-tab="labours">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        <span class="nav-label">Labours</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- ==========================================================================
+       MODALS & ACTION SHEETS
+       ========================================================================== -->
+
+  <!-- 1. First-Run Welcome / Onboarding Modal -->
+  <div id="onboarding-modal" class="modal-overlay">
+    <div class="modal-sheet-container">
+      <div class="modal-header">
+        <div class="header-brand-line">
+          <img src="icon.png" alt="BuilderMate" class="modal-logo-icon" />
+          <div>
+            <h3 class="modal-title">Welcome to BuilderMate</h3>
+            <p class="text-muted text-xs">Set up your construction business profile</p>
+          </div>
+        </div>
+      </div>
+      <form id="form-onboarding" class="modal-form">
+        <p class="text-sm text-secondary" style="margin-bottom: 14px;">
+          BuilderMate tracks your site inventory, material spends, customer payments, direct sales, and labour wages on your mobile phone.
+        </p>
+
+        <div class="form-group">
+          <label class="form-label">Business / Company Name *</label>
+          <input 
+            type="text" 
+            id="onboard-company-name" 
+            class="form-input form-input-lg" 
+            placeholder="e.g. Sri Balaji Builders" 
+            required 
+            autofocus 
+          />
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Contractor / Owner Name</label>
+          <input 
+            type="text" 
+            id="onboard-contractor-name" 
+            class="form-input" 
+            placeholder="e.g. Rajesh Kumar" 
+          />
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Currency Symbol *</label>
+            <select id="onboard-currency" class="form-select">
+              <option value="₹" selected>₹ (INR - Rupee)</option>
+              <option value="$">$ (USD - Dollar)</option>
+              <option value="AED">AED (Dirham)</option>
+              <option value="SAR">SAR (Riyal)</option>
+              <option value="€">€ (EUR - Euro)</option>
+              <option value="£">£ (GBP - Pound)</option>
+              <option value="₨">₨ (PKR / NPR)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Phone Number</label>
+            <input 
+              type="tel" 
+              id="onboard-phone" 
+              class="form-input" 
+              placeholder="e.g. 9876543210" 
+            />
+          </div>
+        </div>
+
+        <div class="modal-footer-btns">
+          <button type="submit" class="btn btn-primary btn-block">Get Started 🚀</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 2. New Project Modal -->
+  <div id="new-project-modal" class="modal-overlay">
+    <div class="modal-sheet-container">
+      <div class="modal-header">
+        <h3 class="modal-title">Create New Project</h3>
+        <button class="modal-close-btn" data-close-modal="new-project-modal" aria-label="Close">×</button>
+      </div>
+      <form id="form-new-project" class="modal-form">
+        <div class="form-group">
+          <label class="form-label">Project Name *</label>
+          <input 
+            type="text" 
+            id="new-proj-name" 
+            class="form-input" 
+            placeholder="e.g. Green Valley Villa - Phase 1" 
+            required 
+            autofocus 
+          />
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Customer Name (Optional)</label>
+            <input 
+              type="text" 
+              id="new-proj-cust-name" 
+              class="form-input" 
+              placeholder="e.g. Anand Sharma" 
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Customer Phone (WhatsApp)</label>
+            <input 
+              type="tel" 
+              id="new-proj-cust-phone" 
+              class="form-input" 
+              placeholder="e.g. 9876543210" 
+            />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Site Address / Location</label>
+          <input 
+            type="text" 
+            id="new-proj-address" 
+            class="form-input" 
+            placeholder="e.g. Plot #42, Lakeview Enclave" 
+          />
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Overall Budget / Est. Total</label>
+            <input 
+              type="number" 
+              step="any" 
+              id="new-proj-budget" 
+              class="form-input font-bold" 
+              placeholder="0.00" 
+            />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Start Date</label>
+            <input 
+              type="date" 
+              id="new-proj-start-date" 
+              class="form-input" 
+            />
+          </div>
+        </div>
+
+        <div class="modal-footer-btns">
+          <button type="button" class="btn btn-outline" data-close-modal="new-project-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Project</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 3. Project Details Full Modal -->
+  <div id="project-details-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="project-details-modal-content">
+      <!-- Injected by js/components/projects.js -->
+    </div>
+  </div>
+
+  <!-- 4. Add Material to Project Modal -->
+  <div id="add-material-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="add-material-modal-content">
+      <!-- Injected by js/components/projects.js -->
+    </div>
+  </div>
+
+  <!-- 5. Record Payment Modal -->
+  <div id="record-payment-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="record-payment-modal-content">
+      <!-- Injected by js/components/projects.js -->
+    </div>
+  </div>
+
+  <!-- 6. Buy Inventory Stock Modal -->
+  <div id="buy-inventory-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="buy-inventory-modal-content">
+      <!-- Injected by js/components/inventory.js -->
+    </div>
+  </div>
+
+  <!-- 7. Inventory History Modal -->
+  <div id="inventory-history-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="inventory-history-modal-content">
+      <!-- Injected by js/components/inventory.js -->
+    </div>
+  </div>
+
+  <!-- 8. Direct Sale Modal -->
+  <div id="direct-sale-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="direct-sale-modal-content">
+      <!-- Injected by js/components/directSales.js -->
+    </div>
+  </div>
+
+  <!-- 9. Log Labour / Attendance / Payout Modal -->
+  <div id="log-labour-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="log-labour-modal-content">
+      <!-- Injected by js/components/labours.js -->
+    </div>
+  </div>
+
+  <!-- 10. Quick Add Action Sheet -->
+  <div id="quick-add-action-sheet" class="modal-overlay">
+    <div class="modal-sheet-container">
+      <div class="modal-header">
+        <h3 class="modal-title">Quick Actions</h3>
+        <button class="modal-close-btn" data-close-modal="quick-add-action-sheet" aria-label="Close">×</button>
+      </div>
+      <div class="action-sheet-items-grid">
+        <div class="action-sheet-item" data-action="new-project">
+          <span class="as-icon">🏗️</span>
+          <span class="as-title">New Project</span>
+          <span class="as-desc">Create customer construction site</span>
+        </div>
+        <div class="action-sheet-item" data-action="buy-stock">
+          <span class="as-icon">📦</span>
+          <span class="as-title">Buy Stock</span>
+          <span class="as-desc">Record material purchase (Spend)</span>
+        </div>
+        <div class="action-sheet-item" data-action="direct-sale">
+          <span class="as-icon">🛒</span>
+          <span class="as-title">Direct Sale</span>
+          <span class="as-desc">Retail material sales (Income)</span>
+        </div>
+        <div class="action-sheet-item" data-action="add-labour">
+          <span class="as-icon">👷</span>
+          <span class="as-title">Labour & Wages</span>
+          <span class="as-desc">Attendance, wage payouts & workers</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 11. Settings & Backup Modal -->
+  <div id="settings-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="settings-modal-content">
+      <!-- Injected by js/components/settings.js -->
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <!-- Main JavaScript App Entry -->
+  <script src="js/app.js"></script>
+</body>
+</html>

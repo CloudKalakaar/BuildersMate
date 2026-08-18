@@ -1,0 +1,32 @@
+{
+  "name": "BuilderMate - Construction & Contractor Tracker",
+  "short_name": "BuilderMate",
+  "description": "Modern mobile management app for builders: Track Inventory, Spends, Income, Labours, Projects, and Direct Sales",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "file_000000003cf88211b90c4a0e71b4632d.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
