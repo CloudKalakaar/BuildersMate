@@ -1,7 +1,7 @@
 /**
  * BuilderMate - Clean Standalone Mobile Management App
  * Engineered for Contractors & Builders
- * Includes Google Drive Continuous Cloud Auto-Backup
+ * Includes Persistent Google Drive Cloud Auto-Backup & Project-Level Labour Effort Tracking
  */
 
 (function() {
@@ -11,6 +11,7 @@
   // 1. CONSTANTS & PRESETS
   // =========================================================================
   const STORAGE_KEY = 'buildermate_data_v1';
+  const GAUTH_KEY = 'buildermate_gdrive_auth_v1';
   const GOOGLE_CLIENT_ID = '434441892966-203633m5fa73di5u7al48o4niilu1obh.apps.googleusercontent.com';
 
   const PRESET_MATERIALS = [
@@ -266,7 +267,7 @@
   }
 
   // =========================================================================
-  // 3. GOOGLE DRIVE CONTINUOUS CLOUD BACKUP ENGINE
+  // 3. PERSISTENT GOOGLE DRIVE CONTINUOUS CLOUD BACKUP ENGINE
   // =========================================================================
   const GDrive = {
     clientId: GOOGLE_CLIENT_ID,
@@ -276,23 +277,43 @@
     accessToken: null,
     tokenExpiresAt: 0,
     syncTimeout: null,
+    periodicInterval: null,
     isSyncing: false,
 
     init() {
+      // Restore persisted auth from localStorage
+      try {
+        const savedAuth = localStorage.getItem(GAUTH_KEY);
+        if (savedAuth) {
+          const parsed = JSON.parse(savedAuth);
+          if (parsed.accessToken && parsed.tokenExpiresAt > Date.now()) {
+            this.accessToken = parsed.accessToken;
+            this.tokenExpiresAt = parsed.tokenExpiresAt;
+          }
+        }
+      } catch(e) {}
+
       if (window.google && window.google.accounts && window.google.accounts.oauth2) {
         try {
+          const userEmailHint = (store && store.getSettings && store.getSettings().gdrive && store.getSettings().gdrive.userEmail) || '';
           this.tokenClient = google.accounts.oauth2.initTokenClient({
             client_id: this.clientId,
             scope: this.scopes,
+            hint: userEmailHint,
             callback: async (resp) => {
               if (resp.error) {
-                console.error('Google OAuth error:', resp);
-                showToast('Google Sign-In error: ' + (resp.error_description || resp.error), 'error');
+                console.warn('Google OAuth response:', resp);
+                if (resp.error !== 'immediate_failed') {
+                  showToast('Google Sign-In notice: ' + (resp.error_description || resp.error), 'info');
+                }
                 return;
               }
               this.accessToken = resp.access_token;
               this.tokenExpiresAt = Date.now() + (Number(resp.expires_in) || 3500) * 1000;
               
+              // Persist auth token
+              this.saveAuthStorage();
+
               // Retrieve user email
               const email = await this.fetchUserEmail(this.accessToken);
               const currentGdrive = store.getSettings().gdrive || {};
@@ -300,7 +321,7 @@
                 gdrive: {
                   ...currentGdrive,
                   isConnected: true,
-                  userEmail: email || 'Connected Account',
+                  userEmail: email || currentGdrive.userEmail || 'Connected Account',
                   autoSync: currentGdrive.autoSync !== false
                 }
               });
@@ -317,6 +338,22 @@
           console.warn('GIS init error:', e);
         }
       }
+
+      // Start periodic background sync timer (every 3 minutes)
+      this.startPeriodicSync();
+    },
+
+    saveAuthStorage() {
+      try {
+        if (this.accessToken) {
+          localStorage.setItem(GAUTH_KEY, JSON.stringify({
+            accessToken: this.accessToken,
+            tokenExpiresAt: this.tokenExpiresAt
+          }));
+        } else {
+          localStorage.removeItem(GAUTH_KEY);
+        }
+      } catch(e) {}
     },
 
     async fetchUserEmail(token) {
@@ -332,17 +369,17 @@
       return '';
     },
 
-    connect() {
+    connect(forceSelect = true) {
       if (!location.protocol.startsWith('http')) {
-        showToast('Google OAuth requires running on http/https (e.g. GitHub Pages or local web server)', 'warning', 4500);
+        showToast('Google OAuth requires running on http/https (e.g. GitHub Pages or local server)', 'warning', 4500);
       }
       if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
-        showToast('Google Services is loading. Please try again in 2 seconds.', 'info');
+        showToast('Google Identity Services is loading. Please try again.', 'info');
         return;
       }
       if (!this.tokenClient) this.init();
       if (this.tokenClient) {
-        this.tokenClient.requestAccessToken({ prompt: 'consent' });
+        this.tokenClient.requestAccessToken({ prompt: forceSelect ? 'select_account' : '' });
       } else {
         showToast('Google Auth Client not initialized', 'error');
       }
@@ -356,6 +393,8 @@
       }
       this.accessToken = null;
       this.tokenExpiresAt = 0;
+      this.saveAuthStorage();
+
       const currentGdrive = store.getSettings().gdrive || {};
       store.updateSettings({
         gdrive: {
@@ -370,18 +409,38 @@
       renderCurrentTab();
     },
 
-    async ensureValidToken() {
-      if (this.accessToken && Date.now() < (this.tokenExpiresAt - 60000)) {
+    async ensureValidToken(allowPrompt = false) {
+      // Check in-memory / local token
+      if (this.accessToken && Date.now() < (this.tokenExpiresAt - 45000)) {
         return this.accessToken;
       }
+
+      // Check localStorage
+      try {
+        const savedAuth = localStorage.getItem(GAUTH_KEY);
+        if (savedAuth) {
+          const parsed = JSON.parse(savedAuth);
+          if (parsed.accessToken && parsed.tokenExpiresAt > (Date.now() + 45000)) {
+            this.accessToken = parsed.accessToken;
+            this.tokenExpiresAt = parsed.tokenExpiresAt;
+            return this.accessToken;
+          }
+        }
+      } catch(e) {}
+
+      // If token client is ready, request token
       return new Promise((resolve) => {
         if (!this.tokenClient) this.init();
         if (!this.tokenClient) return resolve(null);
 
+        const timeout = setTimeout(() => resolve(null), 8000);
+
         this.tokenClient.callback = async (resp) => {
+          clearTimeout(timeout);
           if (resp && resp.access_token) {
             this.accessToken = resp.access_token;
             this.tokenExpiresAt = Date.now() + (Number(resp.expires_in) || 3500) * 1000;
+            this.saveAuthStorage();
             resolve(this.accessToken);
           } else {
             resolve(null);
@@ -389,8 +448,13 @@
         };
 
         try {
-          this.tokenClient.requestAccessToken({ prompt: '' });
+          const userEmail = (store.getSettings().gdrive && store.getSettings().gdrive.userEmail) || '';
+          this.tokenClient.requestAccessToken({
+            prompt: allowPrompt ? 'select_account' : '',
+            hint: userEmail
+          });
         } catch(e) {
+          clearTimeout(timeout);
           resolve(null);
         }
       });
@@ -415,7 +479,7 @@
       return null;
     },
 
-    async uploadData(showNotification = false) {
+    async uploadData(showNotification = false, allowInteractivePrompt = false) {
       if (this.isSyncing) return;
       const gdriveState = store.getSettings().gdrive;
       if (!gdriveState || !gdriveState.isConnected) return;
@@ -424,10 +488,13 @@
       this.updateStatusVisuals('syncing');
 
       try {
-        const token = await this.ensureValidToken();
+        const token = await this.ensureValidToken(allowInteractivePrompt);
         if (!token) {
           this.isSyncing = false;
           this.updateStatusVisuals('connected');
+          if (showNotification) {
+            showToast('Google Drive session expired. Tap Connect to re-authenticate.', 'info');
+          }
           return;
         }
 
@@ -500,7 +567,7 @@
     },
 
     async downloadRemoteData() {
-      const token = await this.ensureValidToken();
+      const token = await this.ensureValidToken(true);
       if (!token) throw new Error('Google Drive authorization required');
 
       const file = await this.findRemoteFile(token);
@@ -539,7 +606,7 @@
 
     async handleInitialSync() {
       try {
-        const token = await this.ensureValidToken();
+        const token = await this.ensureValidToken(false);
         if (!token) return;
 
         const remoteFile = await this.findRemoteFile(token);
@@ -562,7 +629,18 @@
       clearTimeout(this.syncTimeout);
       this.syncTimeout = setTimeout(() => {
         this.uploadData(false);
-      }, 3000);
+      }, 2500);
+    },
+
+    startPeriodicSync() {
+      if (this.periodicInterval) clearInterval(this.periodicInterval);
+      // Run every 3 minutes (180,000ms)
+      this.periodicInterval = setInterval(() => {
+        const gdriveState = store.getSettings().gdrive;
+        if (gdriveState && gdriveState.isConnected && gdriveState.autoSync !== false) {
+          this.uploadData(false);
+        }
+      }, 180000);
     },
 
     updateStatusVisuals(status) {
@@ -575,7 +653,8 @@
         } else if (status === 'connected') {
           p.classList.remove('syncing', 'disconnected');
           p.classList.add('connected');
-          p.textContent = '☁️ Synced';
+          const lastSync = store.getSettings().gdrive?.lastSyncedAt;
+          p.textContent = lastSync ? `☁️ ${formatTimeAgo(lastSync)}` : '☁️ Synced';
         }
       });
     }
@@ -889,6 +968,12 @@
     }
 
     addLabour(labourData) {
+      // Check deduplication by normalized name
+      const existing = this.data.labours.find(l => l.name.toLowerCase().trim() === (labourData.name || '').toLowerCase().trim());
+      if (existing) {
+        return existing;
+      }
+
       const newLabour = {
         id: generateId('lab'),
         name: labourData.name,
@@ -924,10 +1009,18 @@
         notes: attendanceData.notes || ''
       };
 
-      labour.attendance = labour.attendance.filter(a => a.date !== entry.date);
+      // Replace existing attendance entry for the same date & project if duplicate
+      labour.attendance = labour.attendance.filter(a => !(a.date === entry.date && (a.projectId || '') === (entry.projectId || '')));
       labour.attendance.unshift(entry);
       this.saveToStorage();
       return entry;
+    }
+
+    deleteLabourAttendance(labourId, attendanceId) {
+      const labour = this.getLabourById(labourId);
+      if (!labour) return;
+      labour.attendance = labour.attendance.filter(a => a.id !== attendanceId);
+      this.saveToStorage();
     }
 
     addLabourPayout(labourId, payoutData) {
@@ -940,6 +1033,7 @@
         amount: Number(payoutData.amount) || 0,
         type: payoutData.type || 'Daily Wage',
         mode: payoutData.mode || 'Cash',
+        projectId: payoutData.projectId || '',
         notes: payoutData.notes || '',
         createdAt: new Date().toISOString()
       };
@@ -954,6 +1048,91 @@
       if (!labour) return;
       labour.payouts = labour.payouts.filter(p => p.id !== payoutId);
       this.saveToStorage();
+    }
+
+    // --- PROJECT-LEVEL LABOUR EFFORT TRACKING & STATS ---
+    getProjectLabourStats(projectId) {
+      let totalLabourCost = 0;
+      let totalLabourPaid = 0;
+      let totalDays = 0;
+      const workerStats = [];
+      const projectEffortLogs = [];
+      const projectPayoutLogs = [];
+
+      this.data.labours.forEach(labour => {
+        const projAttendance = (labour.attendance || []).filter(a => a.projectId === projectId);
+        const projPayouts = (labour.payouts || []).filter(p => p.projectId === projectId);
+
+        if (projAttendance.length > 0 || projPayouts.length > 0) {
+          let days = 0;
+          let earned = 0;
+
+          projAttendance.forEach(att => {
+            let dayUnits = 0;
+            if (att.status === 'full_day') dayUnits = 1.0;
+            else if (att.status === 'half_day') dayUnits = 0.5;
+            else if (att.status === 'overtime') dayUnits = 1.5;
+            else if (att.status === 'absent') dayUnits = 0.0;
+
+            days += dayUnits;
+            earned += (dayUnits * (labour.wageRate || 0));
+
+            projectEffortLogs.push({
+              id: att.id,
+              labourId: labour.id,
+              labourName: labour.name,
+              labourRole: labour.role,
+              date: att.date,
+              status: att.status,
+              dayUnits: dayUnits,
+              rate: labour.wageRate,
+              earned: Math.round(dayUnits * (labour.wageRate || 0)),
+              notes: att.notes
+            });
+          });
+
+          const paid = projPayouts.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+          projPayouts.forEach(p => {
+            projectPayoutLogs.push({
+              id: p.id,
+              labourId: labour.id,
+              labourName: labour.name,
+              amount: p.amount,
+              date: p.date,
+              mode: p.mode,
+              type: p.type,
+              notes: p.notes
+            });
+          });
+
+          const balDue = Math.max(0, Math.round(earned - paid));
+          totalLabourCost += earned;
+          totalLabourPaid += paid;
+          totalDays += days;
+
+          workerStats.push({
+            labour,
+            daysWorked: days,
+            earned: Math.round(earned),
+            paid: paid,
+            balanceDue: balDue,
+            attendanceCount: projAttendance.length,
+            payoutsCount: projPayouts.length
+          });
+        }
+      });
+
+      projectEffortLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
+      projectPayoutLogs.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+      return {
+        totalLabourCost: Math.round(totalLabourCost),
+        totalLabourPaid,
+        totalDays: Number(totalDays.toFixed(1)),
+        workerStats,
+        projectEffortLogs,
+        projectPayoutLogs
+      };
     }
 
     getTotalIncome() {
@@ -1005,21 +1184,19 @@
 
     getLabourFinancials(labour) {
       let totalEarned = 0;
-      if (labour.wageType === 'daily') {
-        labour.attendance.forEach(att => {
-          if (att.status === 'full_day') totalEarned += labour.wageRate;
-          else if (att.status === 'half_day') totalEarned += (labour.wageRate * 0.5);
-          else if (att.status === 'overtime') totalEarned += (labour.wageRate * 1.5);
-        });
-      } else if (labour.wageType === 'weekly' || labour.wageType === 'monthly') {
-        totalEarned = labour.attendance.reduce((sum, att) => {
-          if (att.status === 'full_day') return sum + (labour.wageRate / (labour.wageType === 'weekly' ? 6 : 26));
-          if (att.status === 'half_day') return sum + ((labour.wageRate / (labour.wageType === 'weekly' ? 6 : 26)) * 0.5);
-          return sum;
-        }, 0);
-      } else {
-        totalEarned = labour.wageRate || 0;
-      }
+      const projectDaysMap = {};
+
+      (labour.attendance || []).forEach(att => {
+        let mult = 0;
+        if (att.status === 'full_day') mult = 1;
+        else if (att.status === 'half_day') mult = 0.5;
+        else if (att.status === 'overtime') mult = 1.5;
+
+        totalEarned += (labour.wageRate * mult);
+
+        const pKey = att.projectId || 'outside';
+        projectDaysMap[pKey] = (projectDaysMap[pKey] || 0) + mult;
+      });
 
       const totalPaid = (labour.payouts || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
       const balanceDue = Math.max(0, Math.round(totalEarned - totalPaid));
@@ -1027,7 +1204,8 @@
       return {
         totalEarned: Math.round(totalEarned),
         totalPaid,
-        balanceDue
+        balanceDue,
+        projectDaysMap
       };
     }
 
@@ -1036,16 +1214,21 @@
       const expensesTotal = (project.expenses || []).reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
       const totalCollected = (project.payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
       
+      const labourStats = this.getProjectLabourStats(project.id);
       const estimatedValue = Number(project.estimatedBudget) > 0 ? Number(project.estimatedBudget) : materialsTotal;
       const pendingBalance = Math.max(0, estimatedValue - totalCollected);
+      const totalProjectCost = materialsTotal + labourStats.totalLabourCost + expensesTotal;
 
       return {
         materialsTotal,
+        labourCost: labourStats.totalLabourCost,
+        labourPaid: labourStats.totalLabourPaid,
         expensesTotal,
-        totalCost: materialsTotal + expensesTotal,
+        totalCost: totalProjectCost,
         totalCollected,
         estimatedValue,
-        pendingBalance
+        pendingBalance,
+        estimatedProfit: totalCollected - totalProjectCost
       };
     }
 
@@ -1305,7 +1488,7 @@
           <div class="empty-state-card">
             <div class="empty-icon">🏗️</div>
             <div class="empty-title">No Projects Created Yet</div>
-            <p class="empty-desc">Create your first construction project to track materials sold and customer payments.</p>
+            <p class="empty-desc">Create your first construction project to track materials sold, labour efforts, and customer payments.</p>
             <button class="btn btn-primary btn-sm" id="empty-add-proj-btn">+ Start New Project</button>
           </div>
         ` : `
@@ -1431,7 +1614,7 @@
       <div class="page-top-bar">
         <div>
           <h1 class="page-main-title">Projects Hub</h1>
-          <p class="page-sub-title">Track customer sites, materials sold & payments collected</p>
+          <p class="page-sub-title">Track sites, materials sold, labour efforts & customer income</p>
         </div>
         <button class="btn btn-primary btn-sm" id="btn-create-new-project">
           <span>+ New Project</span>
@@ -1471,6 +1654,7 @@
         <div class="projects-card-grid">
           ${filteredProjects.map(project => {
             const fin = store.getProjectFinancials(project);
+            const labourStats = store.getProjectLabourStats(project.id);
             const percentCollected = fin.estimatedValue > 0 
               ? Math.min(100, Math.round((fin.totalCollected / fin.estimatedValue) * 100))
               : 100;
@@ -1549,22 +1733,26 @@
                 </div>
 
                 <div class="project-materials-snippet">
-                  <span class="mat-snippet-title">Products / Materials (${project.materials ? project.materials.length : 0}):</span>
+                  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px">
+                    <span class="mat-snippet-title">Products (${project.materials ? project.materials.length : 0}) & Labours (${labourStats.workerStats.length} workers, ${labourStats.totalDays} days):</span>
+                  </div>
                   <div class="materials-tag-cloud">
-                    ${(!project.materials || project.materials.length === 0) ? `
-                      <span class="text-muted text-xs">No materials added yet</span>
-                    ` : project.materials.slice(0, 4).map(m => `
+                    ${labourStats.workerStats.slice(0, 2).map(ws => `
+                      <span class="mat-tag" style="background-color:rgba(59,130,246,0.1); color:#3b82f6">
+                        👷 ${ws.labour.name}: <strong>${ws.daysWorked}d</strong>
+                      </span>
+                    `).join('')}
+                    ${(!project.materials || project.materials.length === 0) && labourStats.workerStats.length === 0 ? `
+                      <span class="text-muted text-xs">No materials or labour logged yet</span>
+                    ` : (project.materials || []).slice(0, 3).map(m => `
                       <span class="mat-tag">${m.name}: <strong>${formatNumber(m.quantity)} ${m.unit}</strong></span>
                     `).join('')}
-                    ${project.materials && project.materials.length > 4 ? `
-                      <span class="mat-tag-more">+${project.materials.length - 4} more</span>
-                    ` : ''}
                   </div>
                 </div>
 
                 <div class="project-card-footer">
                   <button class="btn btn-outline btn-sm btn-view-project" data-id="${project.id}">
-                    <span>📊 Details & Materials</span>
+                    <span>📊 Details & Labours</span>
                   </button>
                   <button class="btn btn-secondary btn-sm btn-quick-payment" data-id="${project.id}">
                     <span>+ Collect Money</span>
@@ -1608,19 +1796,20 @@
     });
   }
 
-  // --- PROJECT DETAILS DRAWER ---
-  function openProjectDetailsModal(projectId) {
+  // --- PROJECT DETAILS DRAWER WITH LABOUR EFFORT TRACKING TAB ---
+  function openProjectDetailsModal(projectId, defaultTab = 'labours') {
     const project = store.getProjectById(projectId);
     if (!project) return;
 
     const settings = store.getSettings();
     const currency = settings.currency || '₹';
     const fin = store.getProjectFinancials(project);
+    const labourStats = store.getProjectLabourStats(projectId);
 
     const modalContainer = document.getElementById('project-details-modal-content');
     if (!modalContainer) return;
 
-    const waSummary = `*${settings.companyName || 'BuilderMate'} - Project Statement*\nProject: *${project.name}*\nClient: *${project.customerName || '-'}*\n\n*Materials / Work Done:*\n${(project.materials || []).map(m => `• ${m.name}: ${m.quantity} ${m.unit} @ ${currency}${m.rate} = ${currency}${m.total}`).join('\n') || 'None'}\n\n*Financials:*\n• Total Billed/Est: *${currency} ${fin.estimatedValue}*\n• Total Paid: *${currency} ${fin.totalCollected}*\n• *Remaining Balance Due: ${currency} ${fin.pendingBalance}*\n\nThank you!`;
+    const waSummary = `*${settings.companyName || 'BuilderMate'} - Project Statement*\nProject: *${project.name}*\nClient: *${project.customerName || '-'}*\n\n*Materials / Work Done:*\n${(project.materials || []).map(m => `• ${m.name}: ${m.quantity} ${m.unit} @ ${currency}${m.rate} = ${currency}${m.total}`).join('\n') || 'None'}\n\n*Site Labours & Efforts:*\n• Total Site Days: *${labourStats.totalDays} days*\n• Labour Wages: *${currency} ${labourStats.totalLabourCost}*\n\n*Financials:*\n• Total Billed/Est: *${currency} ${fin.estimatedValue}*\n• Total Paid: *${currency} ${fin.totalCollected}*\n• *Remaining Balance Due: ${currency} ${fin.pendingBalance}*\n\nThank you!`;
 
     modalContainer.innerHTML = `
       <div class="sheet-header">
@@ -1629,7 +1818,7 @@
             ${project.status === 'in_progress' ? 'In Progress' : project.status === 'completed' ? 'Completed' : 'On Hold'}
           </span>
           <h2 class="sheet-title">${project.name}</h2>
-          <p class="text-muted text-sm">Started: ${formatDate(project.startDate)}</p>
+          <p class="text-muted text-sm">Site: ${project.siteAddress || 'Main Site'} • Started: ${formatDate(project.startDate)}</p>
         </div>
         <button class="sheet-close-btn" data-close-modal="project-details-modal" aria-label="Close">×</button>
       </div>
@@ -1656,109 +1845,251 @@
 
         <div class="proj-sheet-finance-grid">
           <div class="fin-box-sm">
-            <span class="lbl">Est. Total</span>
+            <span class="lbl">Est. Budget</span>
             <strong>${formatCurrency(fin.estimatedValue, currency)}</strong>
           </div>
           <div class="fin-box-sm">
-            <span class="lbl">Total Collected</span>
+            <span class="lbl">Collected</span>
             <strong class="income-color">${formatCurrency(fin.totalCollected, currency)}</strong>
           </div>
           <div class="fin-box-sm">
-            <span class="lbl">Balance Due</span>
-            <strong class="${fin.pendingBalance > 0 ? 'text-amber' : 'income-color'}">${formatCurrency(fin.pendingBalance, currency)}</strong>
+            <span class="lbl">Labour Cost</span>
+            <strong class="spend-color">${formatCurrency(labourStats.totalLabourCost, currency)}</strong>
           </div>
         </div>
 
-        <div class="drawer-section">
-          <div class="section-header-flex">
-            <h3 class="drawer-section-title">🧱 Materials / Products Sold</h3>
-            <button class="btn btn-primary btn-xs" id="btn-add-project-material">+ Add Material</button>
-          </div>
-
-          <div class="material-items-table-wrap">
-            ${(!project.materials || project.materials.length === 0) ? `
-              <div class="empty-table-msg">No materials added yet. Add bricks, steel, cement, aggregates, paint, etc.</div>
-            ` : `
-              <div class="mat-list-items">
-                ${project.materials.map(m => `
-                  <div class="mat-row-item">
-                    <div class="mat-row-left">
-                      <strong class="mat-name-txt">${m.name}</strong>
-                      <div class="mat-rate-txt">${formatNumber(m.quantity)} ${m.unit} × ${formatCurrency(m.rate, currency)}</div>
-                    </div>
-                    <div class="mat-row-right">
-                      <strong class="mat-total-txt">${formatCurrency(m.total, currency)}</strong>
-                      <button class="btn-delete-item btn-del-material" data-mat-id="${m.id}" title="Remove Material">🗑️</button>
-                    </div>
-                  </div>
-                `).join('')}
-                <div class="mat-row-summary">
-                  <span>Total Materials Value:</span>
-                  <strong>${formatCurrency(fin.materialsTotal, currency)}</strong>
-                </div>
-              </div>
-            `}
-          </div>
-        </div>
-
-        <div class="drawer-section">
-          <div class="section-header-flex">
-            <h3 class="drawer-section-title">💰 Money Collected (Income)</h3>
-            <button class="btn btn-secondary btn-xs" id="btn-record-proj-payment">+ Collect Money</button>
-          </div>
-
-          <div class="payments-items-wrap">
-            ${(!project.payments || project.payments.length === 0) ? `
-              <div class="empty-table-msg">No payments collected yet. Record advances or milestone receipts.</div>
-            ` : `
-              <div class="payment-list-items">
-                ${project.payments.map(p => `
-                  <div class="payment-row-item">
-                    <div class="pay-row-left">
-                      <div class="pay-date-badge">${formatDate(p.date)}</div>
-                      <div>
-                        <strong class="income-color">+${formatCurrency(p.amount, currency)}</strong>
-                        <span class="pay-mode-pill">${p.mode}</span>
-                      </div>
-                      ${p.notes ? `<p class="pay-notes-text">${p.notes}</p>` : ''}
-                    </div>
-                    <div class="pay-row-right">
-                      <button class="btn-delete-item btn-del-payment" data-pay-id="${p.id}" title="Delete Payment">🗑️</button>
-                    </div>
-                  </div>
-                `).join('')}
-                <div class="mat-row-summary">
-                  <span>Total Income from Project:</span>
-                  <strong class="income-color">${formatCurrency(fin.totalCollected, currency)}</strong>
-                </div>
-              </div>
-            `}
-          </div>
-        </div>
-
-        <div class="drawer-section">
-          <h3 class="drawer-section-title">⚙️ Project Status</h3>
-          <div class="status-buttons-row">
-            <button class="btn btn-sm ${project.status === 'in_progress' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="in_progress">
-              In Progress
-            </button>
-            <button class="btn btn-sm ${project.status === 'completed' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="completed">
-              Completed
-            </button>
-            <button class="btn btn-sm ${project.status === 'on_hold' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="on_hold">
-              On Hold
-            </button>
-          </div>
-        </div>
-
-        <div class="sheet-danger-footer">
-          <button class="btn btn-danger btn-sm" id="btn-delete-project">
-            Delete Project
+        <!-- Project Sub Tabs Navigation -->
+        <div class="sheet-tabs-nav">
+          <button type="button" class="sheet-tab-btn ${defaultTab === 'labours' ? 'active' : ''}" data-pane="pane-labours">
+            👷 Labours & Efforts (${labourStats.workerStats.length})
           </button>
+          <button type="button" class="sheet-tab-btn ${defaultTab === 'materials' ? 'active' : ''}" data-pane="pane-materials">
+            🧱 Materials Sold (${project.materials ? project.materials.length : 0})
+          </button>
+          <button type="button" class="sheet-tab-btn ${defaultTab === 'payments' ? 'active' : ''}" data-pane="pane-payments">
+            💰 Income (${project.payments ? project.payments.length : 0})
+          </button>
+          <button type="button" class="sheet-tab-btn ${defaultTab === 'settings' ? 'active' : ''}" data-pane="pane-settings">
+            ⚙️ Status & Delete
+          </button>
+        </div>
+
+        <!-- TAB PANE 1: LABOURS & SITE EFFORTS -->
+        <div class="sheet-tab-pane ${defaultTab === 'labours' ? 'active' : ''}" id="pane-labours">
+          <div class="drawer-section">
+            <div class="section-header-flex">
+              <h3 class="drawer-section-title">👷 Site Workers & Efforts</h3>
+              <div style="display:flex; gap:6px">
+                <button class="btn btn-primary btn-xs" id="btn-add-proj-effort">+ Log Effort</button>
+                <button class="btn btn-secondary btn-xs" id="btn-add-proj-lab-payout">+ Pay Worker</button>
+              </div>
+            </div>
+
+            <div class="inventory-overview-grid" style="grid-template-columns:1fr 1fr 1fr; margin-bottom:12px">
+              <div class="inv-kpi-card" style="padding:10px 8px">
+                <span class="kpi-lbl" style="font-size:0.65rem">Site Wages Cost</span>
+                <strong class="kpi-val spend-color" style="font-size:0.9rem">${formatCurrency(labourStats.totalLabourCost, currency)}</strong>
+              </div>
+              <div class="inv-kpi-card" style="padding:10px 8px">
+                <span class="kpi-lbl" style="font-size:0.65rem">Paid on Site</span>
+                <strong class="kpi-val text-primary" style="font-size:0.9rem">${formatCurrency(labourStats.totalLabourPaid, currency)}</strong>
+              </div>
+              <div class="inv-kpi-card" style="padding:10px 8px">
+                <span class="kpi-lbl" style="font-size:0.65rem">Total Days</span>
+                <strong class="kpi-val" style="font-size:0.9rem">${labourStats.totalDays} Days</strong>
+              </div>
+            </div>
+
+            ${labourStats.workerStats.length === 0 ? `
+              <div class="empty-table-msg">
+                No workers logged on this project yet. Tap <strong>"+ Log Effort"</strong> to assign masons, carpenters, or helpers to this site.
+              </div>
+            ` : `
+              <div class="proj-workers-list">
+                ${labourStats.workerStats.map(ws => {
+                  const slipMsg = `*${settings.companyName || 'BuilderMate'} - Site Wage Slip*\nProject: *${project.name}*\nWorker: *${ws.labour.name}* (${ws.labour.role})\nRate: *${currency}${ws.labour.wageRate} / day*\n\n• Days Worked on Site: *${ws.daysWorked} days*\n• Wages Earned on Site: *${currency} ${ws.earned}*\n• Paid on Site: *${currency} ${ws.paid}*\n• *Remaining Balance on Site: ${currency} ${ws.balanceDue}*\n\nThank you!`;
+
+                  return `
+                    <div class="proj-labour-card">
+                      <div class="proj-labour-top">
+                        <div>
+                          <span class="proj-labour-name">${ws.labour.name}</span>
+                          <div class="proj-labour-role">${ws.labour.role} • ${currency}${ws.labour.wageRate}/day</div>
+                        </div>
+                        ${ws.labour.phone ? `
+                          <a href="${getWhatsAppLink(ws.labour.phone, slipMsg)}" target="_blank" class="btn btn-wa btn-xs" title="Send Site Wage Slip">
+                            💬 Slip
+                          </a>
+                        ` : ''}
+                      </div>
+
+                      <div class="proj-labour-metrics">
+                        <div class="proj-labour-stat">
+                          <span class="lbl">Effort / Days</span>
+                          <strong>${ws.daysWorked} Days</strong>
+                        </div>
+                        <div class="proj-labour-stat">
+                          <span class="lbl">Earned on Site</span>
+                          <strong class="spend-color">${formatCurrency(ws.earned, currency)}</strong>
+                        </div>
+                        <div class="proj-labour-stat">
+                          <span class="lbl">Site Balance</span>
+                          <strong class="${ws.balanceDue > 0 ? 'text-amber' : 'income-color'}">${formatCurrency(ws.balanceDue, currency)}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            `}
+
+            <!-- Recent Site Effort Logs -->
+            <div style="margin-top:16px">
+              <h4 class="drawer-section-title" style="font-size:0.8rem">📋 Daily Effort Activity (${labourStats.projectEffortLogs.length} logs)</h4>
+              ${labourStats.projectEffortLogs.length === 0 ? `
+                <div class="text-muted text-xs">No daily attendance logs on this site yet.</div>
+              ` : `
+                <div class="mat-list-items">
+                  ${labourStats.projectEffortLogs.slice(0, 10).map(log => `
+                    <div class="att-row-item">
+                      <div>
+                        <strong>${log.labourName}</strong> (${log.labourRole})
+                        <div class="text-muted text-xs">${formatDate(log.date)} • ${log.status.replace('_', ' ')} (+${currency}${log.earned})</div>
+                        ${log.notes ? `<div class="text-muted text-xs font-italic">${log.notes}</div>` : ''}
+                      </div>
+                      <button class="btn-delete-item btn-del-proj-effort" data-lab-id="${log.labourId}" data-att-id="${log.id}" title="Remove Effort Log">🗑️</button>
+                    </div>
+                  `).join('')}
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB PANE 2: MATERIALS -->
+        <div class="sheet-tab-pane ${defaultTab === 'materials' ? 'active' : ''}" id="pane-materials">
+          <div class="drawer-section">
+            <div class="section-header-flex">
+              <h3 class="drawer-section-title">🧱 Materials / Products Sold</h3>
+              <button class="btn btn-primary btn-xs" id="btn-add-project-material">+ Add Material</button>
+            </div>
+
+            <div class="material-items-table-wrap">
+              ${(!project.materials || project.materials.length === 0) ? `
+                <div class="empty-table-msg">No materials added yet. Add bricks, steel, cement, aggregates, paint, etc.</div>
+              ` : `
+                <div class="mat-list-items">
+                  ${project.materials.map(m => `
+                    <div class="mat-row-item">
+                      <div class="mat-row-left">
+                        <strong class="mat-name-txt">${m.name}</strong>
+                        <div class="mat-rate-txt">${formatNumber(m.quantity)} ${m.unit} × ${formatCurrency(m.rate, currency)}</div>
+                      </div>
+                      <div class="mat-row-right">
+                        <strong class="mat-total-txt">${formatCurrency(m.total, currency)}</strong>
+                        <button class="btn-delete-item btn-del-material" data-mat-id="${m.id}" title="Remove Material">🗑️</button>
+                      </div>
+                    </div>
+                  `).join('')}
+                  <div class="mat-row-summary">
+                    <span>Total Materials Value:</span>
+                    <strong>${formatCurrency(fin.materialsTotal, currency)}</strong>
+                  </div>
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB PANE 3: MONEY COLLECTED (INCOME) -->
+        <div class="sheet-tab-pane ${defaultTab === 'payments' ? 'active' : ''}" id="pane-payments">
+          <div class="drawer-section">
+            <div class="section-header-flex">
+              <h3 class="drawer-section-title">💰 Money Collected (Income)</h3>
+              <button class="btn btn-secondary btn-xs" id="btn-record-proj-payment">+ Collect Money</button>
+            </div>
+
+            <div class="payments-items-wrap">
+              ${(!project.payments || project.payments.length === 0) ? `
+                <div class="empty-table-msg">No payments collected yet. Record advances or milestone receipts.</div>
+              ` : `
+                <div class="payment-list-items">
+                  ${project.payments.map(p => `
+                    <div class="payment-row-item">
+                      <div class="pay-row-left">
+                        <div class="pay-date-badge">${formatDate(p.date)}</div>
+                        <div>
+                          <strong class="income-color">+${formatCurrency(p.amount, currency)}</strong>
+                          <span class="pay-mode-pill">${p.mode}</span>
+                        </div>
+                        ${p.notes ? `<p class="pay-notes-text">${p.notes}</p>` : ''}
+                      </div>
+                      <div class="pay-row-right">
+                        <button class="btn-delete-item btn-del-payment" data-pay-id="${p.id}" title="Delete Payment">🗑️</button>
+                      </div>
+                    </div>
+                  `).join('')}
+                  <div class="mat-row-summary">
+                    <span>Total Income from Project:</span>
+                    <strong class="income-color">${formatCurrency(fin.totalCollected, currency)}</strong>
+                  </div>
+                </div>
+              `}
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB PANE 4: SETTINGS & STATUS -->
+        <div class="sheet-tab-pane ${defaultTab === 'settings' ? 'active' : ''}" id="pane-settings">
+          <div class="drawer-section">
+            <h3 class="drawer-section-title">⚙️ Project Status</h3>
+            <div class="status-buttons-row">
+              <button class="btn btn-sm ${project.status === 'in_progress' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="in_progress">
+                In Progress
+              </button>
+              <button class="btn btn-sm ${project.status === 'completed' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="completed">
+                Completed
+              </button>
+              <button class="btn btn-sm ${project.status === 'on_hold' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="on_hold">
+                On Hold
+              </button>
+            </div>
+          </div>
+
+          <div class="sheet-danger-footer">
+            <button class="btn btn-danger btn-sm" id="btn-delete-project">
+              Delete Project
+            </button>
+          </div>
         </div>
       </div>
     `;
 
+    // Tab switching listeners
+    modalContainer.querySelectorAll('.sheet-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        modalContainer.querySelectorAll('.sheet-tab-btn').forEach(b => b.classList.remove('active'));
+        modalContainer.querySelectorAll('.sheet-tab-pane').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        modalContainer.querySelector(`#${btn.dataset.pane}`)?.classList.add('active');
+      });
+    });
+
+    // Labours & Efforts Action Listeners
+    modalContainer.querySelector('#btn-add-proj-effort')?.addEventListener('click', () => openProjectEffortModal(projectId));
+    modalContainer.querySelector('#btn-add-proj-lab-payout')?.addEventListener('click', () => openProjectLabourPayoutModal(projectId));
+
+    modalContainer.querySelectorAll('.btn-del-proj-effort').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (confirm('Delete this site effort entry?')) {
+          store.deleteLabourAttendance(btn.dataset.labId, btn.dataset.attId);
+          showToast('Effort log removed');
+          openProjectDetailsModal(projectId, 'labours');
+        }
+      });
+    });
+
+    // Material & Payment listeners
     modalContainer.querySelector('#btn-add-project-material')?.addEventListener('click', () => openAddProjectMaterialModal(projectId));
     modalContainer.querySelector('#btn-record-proj-payment')?.addEventListener('click', () => openRecordPaymentModal(projectId));
 
@@ -1767,7 +2098,7 @@
         if (confirm('Remove this material item from project?')) {
           store.deleteProjectMaterial(projectId, btn.dataset.matId);
           showToast('Material removed');
-          openProjectDetailsModal(projectId);
+          openProjectDetailsModal(projectId, 'materials');
         }
       });
     });
@@ -1777,7 +2108,7 @@
         if (confirm('Delete this payment record? This reduces total income count.')) {
           store.deleteProjectPayment(projectId, btn.dataset.payId);
           showToast('Payment deleted', 'info');
-          openProjectDetailsModal(projectId);
+          openProjectDetailsModal(projectId, 'payments');
         }
       });
     });
@@ -1786,7 +2117,7 @@
       btn.addEventListener('click', () => {
         store.updateProject(projectId, { status: btn.dataset.status });
         showToast('Status updated');
-        openProjectDetailsModal(projectId);
+        openProjectDetailsModal(projectId, 'settings');
       });
     });
 
@@ -1800,6 +2131,243 @@
     });
 
     openModal('project-details-modal');
+  }
+
+  // --- LOG PROJECT LABOUR EFFORT MODAL ---
+  function openProjectEffortModal(projectId) {
+    const project = store.getProjectById(projectId);
+    if (!project) return;
+
+    const container = document.getElementById('log-labour-modal-content');
+    if (!container) return;
+
+    const labours = store.getLabours();
+    const currency = store.getSettings().currency || '₹';
+
+    container.innerHTML = `
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">Log Worker Effort on Site</h3>
+          <p class="text-muted text-xs">Project: ${project.name}</p>
+        </div>
+        <button class="modal-close-btn" data-close-modal="log-labour-modal" aria-label="Close">×</button>
+      </div>
+
+      <form id="form-log-project-effort" class="modal-form">
+        <div class="form-group">
+          <label class="form-label">Worker *</label>
+          <div style="display:flex; gap:8px">
+            <select id="peffort-labour-id" class="form-select" style="flex:1" required>
+              <option value="">-- Choose Existing Worker --</option>
+              ${labours.map(l => `
+                <option value="${l.id}">${l.name} (${l.role} - ${currency}${l.wageRate}/day)</option>
+              `).join('')}
+              <option value="__new__">+ Add New Worker</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="new-worker-quick-fields" style="display:none; background:var(--bg-subtle); padding:10px; border-radius:var(--radius-md); margin-bottom:12px">
+          <div class="form-group">
+            <label class="form-label">New Worker Name *</label>
+            <input type="text" id="peffort-new-name" class="form-input" placeholder="e.g. Anand Mistri" />
+          </div>
+          <div class="form-row-2">
+            <div class="form-group">
+              <label class="form-label">Role</label>
+              <select id="peffort-new-role" class="form-select">
+                ${LABOUR_ROLES.map(r => `<option value="${r}">${r}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Daily Wage (${currency}) *</label>
+              <input type="number" step="any" id="peffort-new-rate" class="form-input font-bold" placeholder="e.g. 900" />
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Work Date *</label>
+            <input type="date" id="peffort-date" class="form-input" value="${getTodayDateString()}" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Effort / Status *</label>
+            <select id="peffort-status" class="form-select">
+              <option value="full_day">Full Day (1.0 day)</option>
+              <option value="half_day">Half Day (0.5 day)</option>
+              <option value="overtime">Overtime (1.5 day)</option>
+              <option value="absent">Absent (0.0 day)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Work Done / Task Description</label>
+          <input type="text" id="peffort-notes" class="form-input" placeholder="e.g. 2nd floor column casting, brick laying..." />
+        </div>
+
+        <div class="modal-footer-btns">
+          <button type="button" class="btn btn-outline" data-close-modal="log-labour-modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Effort Log</button>
+        </div>
+      </form>
+    `;
+
+    const labSelect = container.querySelector('#peffort-labour-id');
+    const newFields = container.querySelector('#new-worker-quick-fields');
+
+    labSelect.addEventListener('change', () => {
+      if (labSelect.value === '__new__') {
+        newFields.style.display = 'block';
+        container.querySelector('#peffort-new-name').focus();
+      } else {
+        newFields.style.display = 'none';
+      }
+    });
+
+    const form = container.querySelector('#form-log-project-effort');
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      let targetLabourId = labSelect.value;
+
+      if (targetLabourId === '__new__') {
+        const newName = container.querySelector('#peffort-new-name').value.trim();
+        const newRate = Number(container.querySelector('#peffort-new-rate').value) || 0;
+        const newRole = container.querySelector('#peffort-new-role').value;
+
+        if (!newName || newRate <= 0) {
+          showToast('Please enter worker name and valid wage rate', 'error');
+          return;
+        }
+
+        const created = store.addLabour({
+          name: newName,
+          role: newRole,
+          wageType: 'daily',
+          wageRate: newRate
+        });
+        targetLabourId = created.id;
+      }
+
+      if (!targetLabourId) {
+        showToast('Please select or add a worker', 'error');
+        return;
+      }
+
+      const date = container.querySelector('#peffort-date').value;
+      const status = container.querySelector('#peffort-status').value;
+      const notes = container.querySelector('#peffort-notes').value.trim();
+
+      store.logLabourAttendance(targetLabourId, {
+        date: date,
+        status: status,
+        projectId: projectId,
+        notes: notes
+      });
+
+      closeModal('log-labour-modal');
+      showToast('Worker effort logged on project!');
+      openProjectDetailsModal(projectId, 'labours');
+    });
+
+    openModal('log-labour-modal');
+  }
+
+  // --- RECORD PROJECT LABOUR PAYOUT MODAL ---
+  function openProjectLabourPayoutModal(projectId) {
+    const project = store.getProjectById(projectId);
+    if (!project) return;
+
+    const container = document.getElementById('log-labour-modal-content');
+    if (!container) return;
+
+    const labours = store.getLabours();
+    const currency = store.getSettings().currency || '₹';
+
+    if (labours.length === 0) {
+      showToast('Please add workers first before recording wage payouts', 'error');
+      openProjectEffortModal(projectId);
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="modal-header">
+        <div>
+          <h3 class="modal-title">Pay Worker on Site (Spend)</h3>
+          <p class="text-muted text-xs">Project: ${project.name}</p>
+        </div>
+        <button class="modal-close-btn" data-close-modal="log-labour-modal" aria-label="Close">×</button>
+      </div>
+
+      <form id="form-pay-proj-labour" class="modal-form">
+        <div class="form-group">
+          <label class="form-label">Worker *</label>
+          <select id="ppay-labour-id" class="form-select" required>
+            ${labours.map(l => `
+              <option value="${l.id}">${l.name} (${l.role} - ${currency}${l.wageRate}/day)</option>
+            `).join('')}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Payout Amount (${currency}) *</label>
+          <input type="number" step="any" id="ppay-amount" class="form-input form-input-lg font-bold spend-color" placeholder="0.00" required autofocus />
+        </div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Payment Mode</label>
+            <select id="ppay-mode" class="form-select">
+              <option value="Cash">Cash</option>
+              <option value="UPI / GPay">UPI / GPay / PhonePe</option>
+              <option value="Bank Transfer">Bank Transfer</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Payment Date</label>
+            <input type="date" id="ppay-date" class="form-input" value="${getTodayDateString()}" required />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Notes</label>
+          <input type="text" id="ppay-notes" class="form-input" placeholder="e.g. Weekly site wages advance" />
+        </div>
+
+        <div class="modal-footer-btns">
+          <button type="button" class="btn btn-outline" data-close-modal="log-labour-modal">Cancel</button>
+          <button type="submit" class="btn btn-danger">Record Payout & Add to Spends</button>
+        </div>
+      </form>
+    `;
+
+    const form = container.querySelector('#form-pay-proj-labour');
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const labId = container.querySelector('#ppay-labour-id').value;
+      const amount = Number(container.querySelector('#ppay-amount').value);
+
+      if (!amount || amount <= 0) {
+        showToast('Please enter a valid payout amount', 'error');
+        return;
+      }
+
+      store.addLabourPayout(labId, {
+        amount: amount,
+        type: 'Site Wage',
+        mode: container.querySelector('#ppay-mode').value,
+        date: container.querySelector('#ppay-date').value,
+        projectId: projectId,
+        notes: container.querySelector('#ppay-notes').value.trim()
+      });
+
+      closeModal('log-labour-modal');
+      showToast(`Paid ${formatCurrency(amount, currency)} on site! Added to Spends.`);
+      openProjectDetailsModal(projectId, 'labours');
+    });
+
+    openModal('log-labour-modal');
   }
 
   // --- ADD PROJECT MATERIAL MODAL ---
@@ -1922,7 +2490,7 @@
 
       closeModal('add-material-modal');
       showToast('Material added to project!');
-      openProjectDetailsModal(projectId);
+      openProjectDetailsModal(projectId, 'materials');
     });
 
     openModal('add-material-modal');
@@ -2014,7 +2582,7 @@
       
       const detailsModal = document.getElementById('project-details-modal');
       if (detailsModal && detailsModal.classList.contains('active')) {
-        openProjectDetailsModal(projectId);
+        openProjectDetailsModal(projectId, 'payments');
       }
     });
 
@@ -2772,6 +3340,7 @@
     const settings = store.getSettings();
     const currency = settings.currency || '₹';
     const labours = store.getLabours();
+    const allProjects = store.getProjects();
 
     let totalWagesPaid = 0;
     let totalBalanceDue = 0;
@@ -2798,7 +3367,7 @@
       <div class="page-top-bar">
         <div>
           <h1 class="page-main-title">Labours & Payroll</h1>
-          <p class="page-sub-title">Manage daily/weekly/monthly wages, attendance & wage payouts (Spends)</p>
+          <p class="page-sub-title">Manage wages, track project efforts & record salary payouts (Spends)</p>
         </div>
         <button class="btn btn-primary btn-sm" id="btn-add-new-labour">
           <span>+ Add Worker</span>
@@ -2819,7 +3388,7 @@
         <div class="lab-kpi-card">
           <span class="kpi-lbl">Total Workers</span>
           <strong class="kpi-val">${labours.length} Workers</strong>
-          <span class="kpi-sub">On Roll & Contract</span>
+          <span class="kpi-sub">Across All Projects</span>
         </div>
       </div>
 
@@ -2858,7 +3427,7 @@
         <div class="empty-state-card">
           <div class="empty-icon">👷</div>
           <div class="empty-title">No Workers Registered Yet</div>
-          <p class="empty-desc">Add masons, helpers, carpenters, and electricians to track daily attendance and salary payouts.</p>
+          <p class="empty-desc">Add masons, helpers, carpenters, and electricians to track site efforts and payouts.</p>
           <button class="btn btn-primary btn-sm" id="empty-add-labour-btn">+ Add First Worker</button>
         </div>
       ` : `
@@ -2866,6 +3435,15 @@
           ${filteredLabours.map(lab => {
             const fin = store.getLabourFinancials(lab);
             const lastAtt = lab.attendance && lab.attendance.length > 0 ? lab.attendance[0] : null;
+
+            // Project tags for this worker
+            const projectBadges = Object.entries(fin.projectDaysMap || {}).map(([pId, days]) => {
+              if (pId === 'outside' || !pId) {
+                return `<span class="proj-badge-pill" style="background-color:rgba(100,116,139,0.15); color:var(--text-secondary)">🛠️ Outside (${days}d)</span>`;
+              }
+              const p = allProjects.find(pr => pr.id === pId);
+              return `<span class="proj-badge-pill">📍 ${p ? p.name : 'Site'} (${days}d)</span>`;
+            }).join('');
 
             const waSlip = `*${settings.companyName || 'BuilderMate'} - Wage Statement*\nWorker: *${lab.name}* (${lab.role})\nRate: *${currency}${lab.wageRate} / ${lab.wageType}*\n\n• Total Earned: *${currency} ${fin.totalEarned}*\n• Total Paid: *${currency} ${fin.totalPaid}*\n• *Balance Pending: ${currency} ${fin.balanceDue}*\n\nThank you!`;
 
@@ -2881,6 +3459,12 @@
                     <span>/ ${lab.wageType}</span>
                   </div>
                 </div>
+
+                ${projectBadges ? `
+                  <div style="margin:6px 0 8px 0; display:flex; flex-wrap:wrap">
+                    ${projectBadges}
+                  </div>
+                ` : ''}
 
                 ${lab.phone ? `
                   <div class="customer-contact-bar">
@@ -2908,8 +3492,8 @@
 
                 <div class="labour-stats-row">
                   <div class="lab-stat-box">
-                    <span class="lbl">Days Logged</span>
-                    <strong>${lab.attendance ? lab.attendance.length : 0} Days</strong>
+                    <span class="lbl">Total Days</span>
+                    <strong>${lab.attendance ? lab.attendance.length : 0} Logs</strong>
                   </div>
                   <div class="lab-stat-box">
                     <span class="lbl">Total Paid</span>
@@ -3096,7 +3680,7 @@
     container.innerHTML = `
       <div class="modal-header">
         <div>
-          <h3 class="modal-title">Mark Worker Attendance</h3>
+          <h3 class="modal-title">Mark Worker Attendance & Efforts</h3>
           <p class="text-muted text-xs">Log daily work presence and site allocation</p>
         </div>
         <button class="modal-close-btn" data-close-modal="log-labour-modal" aria-label="Close">×</button>
@@ -3131,9 +3715,9 @@
         </div>
 
         <div class="form-group">
-          <label class="form-label">Assigned Project / Site (Optional)</label>
+          <label class="form-label">Assigned Project / Site</label>
           <select id="att-project-id" class="form-select">
-            <option value="">-- General Site / Not Assigned --</option>
+            <option value="">-- Outside Projects / General Yard --</option>
             ${projects.map(p => `<option value="${p.id}">${p.name} (${p.customerName || 'Site'})</option>`).join('')}
           </select>
         </div>
@@ -3180,6 +3764,7 @@
     if (!container) return;
 
     const labours = store.getLabours();
+    const projects = store.getProjects();
     if (labours.length === 0) {
       showToast('Please add workers first', 'error');
       return;
@@ -3252,13 +3837,21 @@
 
         <div class="form-row-2">
           <div class="form-group">
+            <label class="form-label">Linked Project (Optional)</label>
+            <select id="payout-project-id" class="form-select">
+              <option value="">-- General / Outside Projects --</option>
+              ${projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
             <label class="form-label">Date</label>
             <input type="date" id="payout-date" class="form-input" value="${getTodayDateString()}" required />
           </div>
-          <div class="form-group">
-            <label class="form-label">Notes</label>
-            <input type="text" id="payout-notes" class="form-input" placeholder="e.g. Paid in full for week" />
-          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Notes</label>
+          <input type="text" id="payout-notes" class="form-input" placeholder="e.g. Paid in full for week" />
         </div>
 
         <div class="modal-footer-btns">
@@ -3298,6 +3891,7 @@
         type: container.querySelector('#payout-type').value,
         mode: container.querySelector('#payout-mode').value,
         date: container.querySelector('#payout-date').value,
+        projectId: container.querySelector('#payout-project-id').value,
         notes: container.querySelector('#payout-notes').value.trim()
       });
 
@@ -3317,6 +3911,7 @@
     const settings = store.getSettings();
     const currency = settings.currency || '₹';
     const fin = store.getLabourFinancials(labour);
+    const allProjects = store.getProjects();
 
     const container = document.getElementById('log-labour-modal-content');
     if (!container) return;
@@ -3363,19 +3958,25 @@
         </div>
 
         <div class="drawer-section">
-          <h4 class="drawer-section-title">📅 Attendance History (${labour.attendance ? labour.attendance.length : 0} logs)</h4>
+          <h4 class="drawer-section-title">📅 Attendance & Project Efforts (${labour.attendance ? labour.attendance.length : 0} logs)</h4>
           <div class="attendance-history-list">
             ${(!labour.attendance || labour.attendance.length === 0) ? `
               <div class="empty-table-msg">No attendance logged yet.</div>
-            ` : labour.attendance.map(a => `
-              <div class="att-row-item">
-                <div>
-                  <strong>${formatDate(a.date)}</strong>
-                  <span class="status-tag status-att-${a.status}">${a.status.replace('_', ' ')}</span>
+            ` : labour.attendance.map(a => {
+              const p = a.projectId ? allProjects.find(pr => pr.id === a.projectId) : null;
+              return `
+                <div class="att-row-item">
+                  <div>
+                    <strong>${formatDate(a.date)}</strong>
+                    <span class="status-tag status-att-${a.status}">${a.status.replace('_', ' ')}</span>
+                    <div class="text-muted text-xs">
+                      ${p ? `📍 ${p.name}` : '🛠️ Outside Projects'}
+                      ${a.notes ? ` • ${a.notes}` : ''}
+                    </div>
+                  </div>
                 </div>
-                ${a.notes ? `<div class="text-muted text-xs">${a.notes}</div>` : ''}
-              </div>
-            `).join('')}
+              `;
+            }).join('')}
           </div>
         </div>
 
@@ -3384,21 +3985,25 @@
           <div class="payout-history-list">
             ${(!labour.payouts || labour.payouts.length === 0) ? `
               <div class="empty-table-msg">No payouts recorded yet.</div>
-            ` : labour.payouts.map(p => `
-              <div class="payment-row-item">
-                <div class="pay-row-left">
-                  <div class="pay-date-badge">${formatDate(p.date)}</div>
-                  <div>
-                    <strong class="spend-color">-${formatCurrency(p.amount, currency)}</strong>
-                    <span class="pay-mode-pill">${p.type} (${p.mode})</span>
+            ` : labour.payouts.map(p => {
+              const proj = p.projectId ? allProjects.find(pr => pr.id === p.projectId) : null;
+              return `
+                <div class="payment-row-item">
+                  <div class="pay-row-left">
+                    <div class="pay-date-badge">${formatDate(p.date)}</div>
+                    <div>
+                      <strong class="spend-color">-${formatCurrency(p.amount, currency)}</strong>
+                      <span class="pay-mode-pill">${p.type} (${p.mode})</span>
+                      ${proj ? `<span class="proj-badge-pill" style="font-size:0.6rem">📍 ${proj.name}</span>` : ''}
+                    </div>
+                    ${p.notes ? `<p class="pay-notes-text">${p.notes}</p>` : ''}
                   </div>
-                  ${p.notes ? `<p class="pay-notes-text">${p.notes}</p>` : ''}
+                  <div class="pay-row-right">
+                    <button class="btn-delete-item btn-del-lab-payout" data-payout-id="${p.id}" title="Delete Payout">🗑️</button>
+                  </div>
                 </div>
-                <div class="pay-row-right">
-                  <button class="btn-delete-item btn-del-lab-payout" data-payout-id="${p.id}" title="Delete Payout">🗑️</button>
-                </div>
-              </div>
-            `).join('')}
+              `;
+            }).join('')}
           </div>
         </div>
 
@@ -3565,7 +4170,7 @@
               </div>
 
               <label class="gdrive-toggle-label">
-                <span>🔄 Continuous Auto-Sync on change</span>
+                <span>🔄 Continuous Auto-Sync (on change & background)</span>
                 <input type="checkbox" id="gdrive-toggle-autosync" class="gdrive-toggle-input" ${gdrive.autoSync !== false ? 'checked' : ''} />
               </label>
 
@@ -3619,7 +4224,7 @@
         <div class="settings-section-card">
           <h4 class="settings-card-title">📱 App Information & Quick Reset</h4>
           <div class="app-info-row">
-            <span>Version: <strong>BuilderMate v1.0.4</strong></span>
+            <span>Version: <strong>BuilderMate v1.0.5</strong></span>
             <span class="status-pill pill-green">Cloud & Offline Ready</span>
           </div>
           
@@ -3636,9 +4241,9 @@
     `;
 
     // Google Drive Event Listeners
-    container.querySelector('#btn-gdrive-connect')?.addEventListener('click', () => GDrive.connect());
+    container.querySelector('#btn-gdrive-connect')?.addEventListener('click', () => GDrive.connect(true));
     container.querySelector('#btn-gdrive-disconnect')?.addEventListener('click', () => GDrive.disconnect());
-    container.querySelector('#btn-gdrive-sync-now')?.addEventListener('click', () => GDrive.uploadData(true));
+    container.querySelector('#btn-gdrive-sync-now')?.addEventListener('click', () => GDrive.uploadData(true, true));
     container.querySelector('#btn-gdrive-restore-cloud')?.addEventListener('click', () => GDrive.restoreFromCloud());
     
     container.querySelector('#gdrive-toggle-autosync')?.addEventListener('change', (e) => {
@@ -3763,9 +4368,9 @@
           wageRate: 900
         });
 
-        store.logLabourAttendance(lab1.id, { date: '2026-08-14', status: 'full_day' });
-        store.logLabourAttendance(lab1.id, { date: '2026-08-15', status: 'full_day' });
-        store.addLabourPayout(lab1.id, { amount: 1500, type: 'Daily Wage', mode: 'Cash' });
+        store.logLabourAttendance(lab1.id, { date: '2026-08-14', status: 'full_day', projectId: sampleProj.id, notes: 'Ground floor brick laying' });
+        store.logLabourAttendance(lab1.id, { date: '2026-08-15', status: 'full_day', projectId: sampleProj.id, notes: 'Column centering' });
+        store.addLabourPayout(lab1.id, { amount: 1500, type: 'Daily Wage', mode: 'Cash', projectId: sampleProj.id });
 
         showToast('Sample demo data loaded!');
         closeModal('settings-modal');
@@ -3932,7 +4537,7 @@
       showToast(`Project "${name}" created!`);
       
       switchTab('projects');
-      openProjectDetailsModal(created.id);
+      openProjectDetailsModal(created.id, 'labours');
     });
 
     // Modal Backdrop click to close
@@ -3944,10 +4549,26 @@
       });
     });
 
-    // Reconnection listener
+    // Background auto-sync on focus and visibility change
     window.addEventListener('online', () => {
       if (GDrive && GDrive.queueDebouncedSync) {
         GDrive.queueDebouncedSync();
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && GDrive && GDrive.uploadData) {
+        const gdriveState = store.getSettings().gdrive;
+        if (gdriveState && gdriveState.isConnected && gdriveState.autoSync !== false) {
+          GDrive.uploadData(false);
+        }
+      }
+    });
+
+    window.addEventListener('focus', () => {
+      const gdriveState = store.getSettings().gdrive;
+      if (gdriveState && gdriveState.isConnected && gdriveState.autoSync !== false) {
+        GDrive.uploadData(false);
       }
     });
 
