@@ -1403,7 +1403,7 @@
             <h1 class="company-name-text">${companyTitle}</h1>
             <p class="contractor-greeting-text">${greetingSubtitle}</p>
             ${gdrive.isConnected ? `
-              <span class="header-cloud-chip connected" title="Connected to Google Drive: ${gdrive.userEmail}">
+              <span class="header-cloud-chip connected" id="header-cloud-sync-chip" style="cursor:pointer" title="Connected to Google Drive: ${gdrive.userEmail}. Tap to sync now!">
                 ☁️ ${gdrive.lastSyncedAt ? formatTimeAgo(gdrive.lastSyncedAt) : 'Synced'}
               </span>
             ` : ''}
@@ -1600,6 +1600,10 @@
     `;
 
     // Header buttons
+    container.querySelector('#header-cloud-sync-chip')?.addEventListener('click', () => {
+      GDrive.uploadData(true, true);
+    });
+
     container.querySelector('#dash-theme-toggle-btn')?.addEventListener('click', toggleTheme);
 
     container.querySelector('#dash-hard-refresh-btn')?.addEventListener('click', (e) => {
