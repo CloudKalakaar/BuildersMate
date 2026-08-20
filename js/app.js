@@ -1,7 +1,7 @@
 /**
  * BuilderMate - Clean Standalone Mobile Management App
  * Engineered for Contractors & Builders
- * Includes Persistent Google Drive Cloud Auto-Backup & Project-Level Labour Effort Tracking
+ * Includes Persistent Google Drive Cloud Auto-Backup, Project Accordion Dropdowns & Multi-Day Labour Effort Tracking
  */
 
 (function() {
@@ -968,7 +968,6 @@
     }
 
     addLabour(labourData) {
-      // Check deduplication by normalized name
       const existing = this.data.labours.find(l => l.name.toLowerCase().trim() === (labourData.name || '').toLowerCase().trim());
       if (existing) {
         return existing;
@@ -1001,16 +1000,47 @@
       const labour = this.getLabourById(labourId);
       if (!labour) return null;
 
+      const days = attendanceData.days !== undefined ? Number(attendanceData.days) : (
+        attendanceData.status === 'half_day' ? 0.5 :
+        attendanceData.status === 'overtime' ? 1.5 :
+        attendanceData.status === 'absent' ? 0 : 1.0
+      );
+      const rate = Number(attendanceData.rate) || (labour.wageRate || 0);
+      const totalCost = attendanceData.totalCost !== undefined 
+        ? Number(attendanceData.totalCost) 
+        : Math.round(days * rate);
+
       const entry = {
         id: generateId('att'),
         date: attendanceData.date || getTodayDateString(),
-        status: attendanceData.status || 'full_day',
+        status: attendanceData.status || (days > 1 ? 'multi_days' : 'full_day'),
+        days: days,
+        rate: rate,
+        totalCost: totalCost,
         projectId: attendanceData.projectId || '',
         notes: attendanceData.notes || ''
       };
 
-      // Replace existing attendance entry for the same date & project if duplicate
-      labour.attendance = labour.attendance.filter(a => !(a.date === entry.date && (a.projectId || '') === (entry.projectId || '')));
+      labour.attendance.unshift(entry);
+      this.saveToStorage();
+      return entry;
+    }
+
+    quickIncrementWorkerDays(projectId, labourId, daysToAdd = 1) {
+      const labour = this.getLabourById(labourId);
+      if (!labour) return null;
+
+      const entry = {
+        id: generateId('att'),
+        date: getTodayDateString(),
+        status: daysToAdd > 1 ? 'multi_days' : 'full_day',
+        days: Number(daysToAdd),
+        rate: labour.wageRate || 0,
+        totalCost: Math.round(Number(daysToAdd) * (labour.wageRate || 0)),
+        projectId: projectId,
+        notes: `Quick added +${daysToAdd} day(s)`
+      };
+
       labour.attendance.unshift(entry);
       this.saveToStorage();
       return entry;
@@ -1068,14 +1098,18 @@
           let earned = 0;
 
           projAttendance.forEach(att => {
-            let dayUnits = 0;
-            if (att.status === 'full_day') dayUnits = 1.0;
-            else if (att.status === 'half_day') dayUnits = 0.5;
-            else if (att.status === 'overtime') dayUnits = 1.5;
-            else if (att.status === 'absent') dayUnits = 0.0;
+            let dayUnits = att.days !== undefined ? Number(att.days) : (
+              att.status === 'half_day' ? 0.5 :
+              att.status === 'overtime' ? 1.5 :
+              att.status === 'absent' ? 0 : 1.0
+            );
+
+            const lineCost = att.totalCost !== undefined 
+              ? Number(att.totalCost) 
+              : Math.round(dayUnits * (att.rate || labour.wageRate || 0));
 
             days += dayUnits;
-            earned += (dayUnits * (labour.wageRate || 0));
+            earned += lineCost;
 
             projectEffortLogs.push({
               id: att.id,
@@ -1084,9 +1118,9 @@
               labourRole: labour.role,
               date: att.date,
               status: att.status,
-              dayUnits: dayUnits,
-              rate: labour.wageRate,
-              earned: Math.round(dayUnits * (labour.wageRate || 0)),
+              days: dayUnits,
+              rate: att.rate || labour.wageRate,
+              earned: lineCost,
               notes: att.notes
             });
           });
@@ -1112,7 +1146,7 @@
 
           workerStats.push({
             labour,
-            daysWorked: days,
+            daysWorked: Number(days.toFixed(1)),
             earned: Math.round(earned),
             paid: paid,
             balanceDue: balDue,
@@ -1187,15 +1221,20 @@
       const projectDaysMap = {};
 
       (labour.attendance || []).forEach(att => {
-        let mult = 0;
-        if (att.status === 'full_day') mult = 1;
-        else if (att.status === 'half_day') mult = 0.5;
-        else if (att.status === 'overtime') mult = 1.5;
+        let dayUnits = att.days !== undefined ? Number(att.days) : (
+          att.status === 'half_day' ? 0.5 :
+          att.status === 'overtime' ? 1.5 :
+          att.status === 'absent' ? 0 : 1.0
+        );
 
-        totalEarned += (labour.wageRate * mult);
+        const lineCost = att.totalCost !== undefined 
+          ? Number(att.totalCost) 
+          : Math.round(dayUnits * (att.rate || labour.wageRate || 0));
+
+        totalEarned += lineCost;
 
         const pKey = att.projectId || 'outside';
-        projectDaysMap[pKey] = (projectDaysMap[pKey] || 0) + mult;
+        projectDaysMap[pKey] = Number(((projectDaysMap[pKey] || 0) + dayUnits).toFixed(1));
       });
 
       const totalPaid = (labour.payouts || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
@@ -1734,7 +1773,7 @@
 
                 <div class="project-materials-snippet">
                   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px">
-                    <span class="mat-snippet-title">Products (${project.materials ? project.materials.length : 0}) & Labours (${labourStats.workerStats.length} workers, ${labourStats.totalDays} days):</span>
+                    <span class="mat-snippet-title">Products (${project.materials ? project.materials.length : 0}) & Labours (${labourStats.workerStats.length} workers, ${labourStats.totalDays}d):</span>
                   </div>
                   <div class="materials-tag-cloud">
                     ${labourStats.workerStats.slice(0, 2).map(ws => `
@@ -1796,8 +1835,8 @@
     });
   }
 
-  // --- PROJECT DETAILS DRAWER WITH LABOUR EFFORT TRACKING TAB ---
-  function openProjectDetailsModal(projectId, defaultTab = 'labours') {
+  // --- PROJECT DETAILS DRAWER WITH COLLAPSIBLE ACCORDION DROPDOWNS ---
+  function openProjectDetailsModal(projectId, defaultExpanded = 'labours') {
     const project = store.getProjectById(projectId);
     if (!project) return;
 
@@ -1858,220 +1897,280 @@
           </div>
         </div>
 
-        <!-- Project Sub Tabs Navigation -->
-        <div class="sheet-tabs-nav">
-          <button type="button" class="sheet-tab-btn ${defaultTab === 'labours' ? 'active' : ''}" data-pane="pane-labours">
-            👷 Labours & Efforts (${labourStats.workerStats.length})
-          </button>
-          <button type="button" class="sheet-tab-btn ${defaultTab === 'materials' ? 'active' : ''}" data-pane="pane-materials">
-            🧱 Materials Sold (${project.materials ? project.materials.length : 0})
-          </button>
-          <button type="button" class="sheet-tab-btn ${defaultTab === 'payments' ? 'active' : ''}" data-pane="pane-payments">
-            💰 Income (${project.payments ? project.payments.length : 0})
-          </button>
-          <button type="button" class="sheet-tab-btn ${defaultTab === 'settings' ? 'active' : ''}" data-pane="pane-settings">
-            ⚙️ Status & Delete
-          </button>
-        </div>
+        <!-- COLLAPSIBLE ACCORDION DROPDOWN SECTIONS -->
+        <div class="project-accordions-group">
 
-        <!-- TAB PANE 1: LABOURS & SITE EFFORTS -->
-        <div class="sheet-tab-pane ${defaultTab === 'labours' ? 'active' : ''}" id="pane-labours">
-          <div class="drawer-section">
-            <div class="section-header-flex">
-              <h3 class="drawer-section-title">👷 Site Workers & Efforts</h3>
-              <div style="display:flex; gap:6px">
-                <button class="btn btn-primary btn-xs" id="btn-add-proj-effort">+ Log Effort</button>
-                <button class="btn btn-secondary btn-xs" id="btn-add-proj-lab-payout">+ Pay Worker</button>
+          <!-- ACCORDION 1: LABOURS & SITE EFFORTS -->
+          <div class="proj-accordion-card ${defaultExpanded === 'labours' ? 'expanded' : ''}" id="acc-card-labours">
+            <button type="button" class="proj-accordion-header" data-target="acc-card-labours">
+              <div class="proj-accordion-title-wrap">
+                <span class="proj-accordion-icon">👷</span>
+                <span class="proj-accordion-title">Labours & Site Efforts</span>
+                <span class="proj-accordion-badge">${labourStats.workerStats.length} Workers • ${labourStats.totalDays}d</span>
               </div>
-            </div>
-
-            <div class="inventory-overview-grid" style="grid-template-columns:1fr 1fr 1fr; margin-bottom:12px">
-              <div class="inv-kpi-card" style="padding:10px 8px">
-                <span class="kpi-lbl" style="font-size:0.65rem">Site Wages Cost</span>
-                <strong class="kpi-val spend-color" style="font-size:0.9rem">${formatCurrency(labourStats.totalLabourCost, currency)}</strong>
-              </div>
-              <div class="inv-kpi-card" style="padding:10px 8px">
-                <span class="kpi-lbl" style="font-size:0.65rem">Paid on Site</span>
-                <strong class="kpi-val text-primary" style="font-size:0.9rem">${formatCurrency(labourStats.totalLabourPaid, currency)}</strong>
-              </div>
-              <div class="inv-kpi-card" style="padding:10px 8px">
-                <span class="kpi-lbl" style="font-size:0.65rem">Total Days</span>
-                <strong class="kpi-val" style="font-size:0.9rem">${labourStats.totalDays} Days</strong>
-              </div>
-            </div>
-
-            ${labourStats.workerStats.length === 0 ? `
-              <div class="empty-table-msg">
-                No workers logged on this project yet. Tap <strong>"+ Log Effort"</strong> to assign masons, carpenters, or helpers to this site.
-              </div>
-            ` : `
-              <div class="proj-workers-list">
-                ${labourStats.workerStats.map(ws => {
-                  const slipMsg = `*${settings.companyName || 'BuilderMate'} - Site Wage Slip*\nProject: *${project.name}*\nWorker: *${ws.labour.name}* (${ws.labour.role})\nRate: *${currency}${ws.labour.wageRate} / day*\n\n• Days Worked on Site: *${ws.daysWorked} days*\n• Wages Earned on Site: *${currency} ${ws.earned}*\n• Paid on Site: *${currency} ${ws.paid}*\n• *Remaining Balance on Site: ${currency} ${ws.balanceDue}*\n\nThank you!`;
-
-                  return `
-                    <div class="proj-labour-card">
-                      <div class="proj-labour-top">
-                        <div>
-                          <span class="proj-labour-name">${ws.labour.name}</span>
-                          <div class="proj-labour-role">${ws.labour.role} • ${currency}${ws.labour.wageRate}/day</div>
-                        </div>
-                        ${ws.labour.phone ? `
-                          <a href="${getWhatsAppLink(ws.labour.phone, slipMsg)}" target="_blank" class="btn btn-wa btn-xs" title="Send Site Wage Slip">
-                            💬 Slip
-                          </a>
-                        ` : ''}
-                      </div>
-
-                      <div class="proj-labour-metrics">
-                        <div class="proj-labour-stat">
-                          <span class="lbl">Effort / Days</span>
-                          <strong>${ws.daysWorked} Days</strong>
-                        </div>
-                        <div class="proj-labour-stat">
-                          <span class="lbl">Earned on Site</span>
-                          <strong class="spend-color">${formatCurrency(ws.earned, currency)}</strong>
-                        </div>
-                        <div class="proj-labour-stat">
-                          <span class="lbl">Site Balance</span>
-                          <strong class="${ws.balanceDue > 0 ? 'text-amber' : 'income-color'}">${formatCurrency(ws.balanceDue, currency)}</strong>
-                        </div>
-                      </div>
-                    </div>
-                  `;
-                }).join('')}
-              </div>
-            `}
-
-            <!-- Recent Site Effort Logs -->
-            <div style="margin-top:16px">
-              <h4 class="drawer-section-title" style="font-size:0.8rem">📋 Daily Effort Activity (${labourStats.projectEffortLogs.length} logs)</h4>
-              ${labourStats.projectEffortLogs.length === 0 ? `
-                <div class="text-muted text-xs">No daily attendance logs on this site yet.</div>
-              ` : `
-                <div class="mat-list-items">
-                  ${labourStats.projectEffortLogs.slice(0, 10).map(log => `
-                    <div class="att-row-item">
-                      <div>
-                        <strong>${log.labourName}</strong> (${log.labourRole})
-                        <div class="text-muted text-xs">${formatDate(log.date)} • ${log.status.replace('_', ' ')} (+${currency}${log.earned})</div>
-                        ${log.notes ? `<div class="text-muted text-xs font-italic">${log.notes}</div>` : ''}
-                      </div>
-                      <button class="btn-delete-item btn-del-proj-effort" data-lab-id="${log.labourId}" data-att-id="${log.id}" title="Remove Effort Log">🗑️</button>
-                    </div>
-                  `).join('')}
-                </div>
-              `}
-            </div>
-          </div>
-        </div>
-
-        <!-- TAB PANE 2: MATERIALS -->
-        <div class="sheet-tab-pane ${defaultTab === 'materials' ? 'active' : ''}" id="pane-materials">
-          <div class="drawer-section">
-            <div class="section-header-flex">
-              <h3 class="drawer-section-title">🧱 Materials / Products Sold</h3>
-              <button class="btn btn-primary btn-xs" id="btn-add-project-material">+ Add Material</button>
-            </div>
-
-            <div class="material-items-table-wrap">
-              ${(!project.materials || project.materials.length === 0) ? `
-                <div class="empty-table-msg">No materials added yet. Add bricks, steel, cement, aggregates, paint, etc.</div>
-              ` : `
-                <div class="mat-list-items">
-                  ${project.materials.map(m => `
-                    <div class="mat-row-item">
-                      <div class="mat-row-left">
-                        <strong class="mat-name-txt">${m.name}</strong>
-                        <div class="mat-rate-txt">${formatNumber(m.quantity)} ${m.unit} × ${formatCurrency(m.rate, currency)}</div>
-                      </div>
-                      <div class="mat-row-right">
-                        <strong class="mat-total-txt">${formatCurrency(m.total, currency)}</strong>
-                        <button class="btn-delete-item btn-del-material" data-mat-id="${m.id}" title="Remove Material">🗑️</button>
-                      </div>
-                    </div>
-                  `).join('')}
-                  <div class="mat-row-summary">
-                    <span>Total Materials Value:</span>
-                    <strong>${formatCurrency(fin.materialsTotal, currency)}</strong>
-                  </div>
-                </div>
-              `}
-            </div>
-          </div>
-        </div>
-
-        <!-- TAB PANE 3: MONEY COLLECTED (INCOME) -->
-        <div class="sheet-tab-pane ${defaultTab === 'payments' ? 'active' : ''}" id="pane-payments">
-          <div class="drawer-section">
-            <div class="section-header-flex">
-              <h3 class="drawer-section-title">💰 Money Collected (Income)</h3>
-              <button class="btn btn-secondary btn-xs" id="btn-record-proj-payment">+ Collect Money</button>
-            </div>
-
-            <div class="payments-items-wrap">
-              ${(!project.payments || project.payments.length === 0) ? `
-                <div class="empty-table-msg">No payments collected yet. Record advances or milestone receipts.</div>
-              ` : `
-                <div class="payment-list-items">
-                  ${project.payments.map(p => `
-                    <div class="payment-row-item">
-                      <div class="pay-row-left">
-                        <div class="pay-date-badge">${formatDate(p.date)}</div>
-                        <div>
-                          <strong class="income-color">+${formatCurrency(p.amount, currency)}</strong>
-                          <span class="pay-mode-pill">${p.mode}</span>
-                        </div>
-                        ${p.notes ? `<p class="pay-notes-text">${p.notes}</p>` : ''}
-                      </div>
-                      <div class="pay-row-right">
-                        <button class="btn-delete-item btn-del-payment" data-pay-id="${p.id}" title="Delete Payment">🗑️</button>
-                      </div>
-                    </div>
-                  `).join('')}
-                  <div class="mat-row-summary">
-                    <span>Total Income from Project:</span>
-                    <strong class="income-color">${formatCurrency(fin.totalCollected, currency)}</strong>
-                  </div>
-                </div>
-              `}
-            </div>
-          </div>
-        </div>
-
-        <!-- TAB PANE 4: SETTINGS & STATUS -->
-        <div class="sheet-tab-pane ${defaultTab === 'settings' ? 'active' : ''}" id="pane-settings">
-          <div class="drawer-section">
-            <h3 class="drawer-section-title">⚙️ Project Status</h3>
-            <div class="status-buttons-row">
-              <button class="btn btn-sm ${project.status === 'in_progress' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="in_progress">
-                In Progress
-              </button>
-              <button class="btn btn-sm ${project.status === 'completed' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="completed">
-                Completed
-              </button>
-              <button class="btn btn-sm ${project.status === 'on_hold' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="on_hold">
-                On Hold
-              </button>
-            </div>
-          </div>
-
-          <div class="sheet-danger-footer">
-            <button class="btn btn-danger btn-sm" id="btn-delete-project">
-              Delete Project
+              <svg class="proj-accordion-chevron" viewBox="0 0 24 24" fill="none" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </button>
+
+            <div class="proj-accordion-content">
+              <div class="section-header-flex" style="margin-bottom:10px">
+                <span class="text-xs text-muted">Track work days, daily wages & site salary payouts</span>
+                <div style="display:flex; gap:6px">
+                  <button class="btn btn-primary btn-xs" id="btn-add-proj-effort">+ Log Effort (Days)</button>
+                  <button class="btn btn-secondary btn-xs" id="btn-add-proj-lab-payout">+ Pay Worker</button>
+                </div>
+              </div>
+
+              <div class="inventory-overview-grid" style="grid-template-columns:1fr 1fr 1fr; margin-bottom:12px">
+                <div class="inv-kpi-card" style="padding:8px 6px">
+                  <span class="kpi-lbl" style="font-size:0.62rem">Wages Cost</span>
+                  <strong class="kpi-val spend-color" style="font-size:0.85rem">${formatCurrency(labourStats.totalLabourCost, currency)}</strong>
+                </div>
+                <div class="inv-kpi-card" style="padding:8px 6px">
+                  <span class="kpi-lbl" style="font-size:0.62rem">Paid on Site</span>
+                  <strong class="kpi-val text-primary" style="font-size:0.85rem">${formatCurrency(labourStats.totalLabourPaid, currency)}</strong>
+                </div>
+                <div class="inv-kpi-card" style="padding:8px 6px">
+                  <span class="kpi-lbl" style="font-size:0.62rem">Total Days</span>
+                  <strong class="kpi-val" style="font-size:0.85rem">${labourStats.totalDays} Days</strong>
+                </div>
+              </div>
+
+              ${labourStats.workerStats.length === 0 ? `
+                <div class="empty-table-msg">
+                  No workers logged on this project yet. Tap <strong>"+ Log Effort (Days)"</strong> to assign workers with single or multiple days.
+                </div>
+              ` : `
+                <div class="proj-workers-list">
+                  ${labourStats.workerStats.map(ws => {
+                    const slipMsg = `*${settings.companyName || 'BuilderMate'} - Site Wage Slip*\nProject: *${project.name}*\nWorker: *${ws.labour.name}* (${ws.labour.role})\nRate: *${currency}${ws.labour.wageRate} / day*\n\n• Days Worked on Site: *${ws.daysWorked} days*\n• Wages Earned on Site: *${currency} ${ws.earned}*\n• Paid on Site: *${currency} ${ws.paid}*\n• *Remaining Balance on Site: ${currency} ${ws.balanceDue}*\n\nThank you!`;
+
+                    return `
+                      <div class="proj-labour-card">
+                        <div class="proj-labour-top">
+                          <div>
+                            <span class="proj-labour-name">${ws.labour.name}</span>
+                            <div class="proj-labour-role">${ws.labour.role} • ${currency}${ws.labour.wageRate}/day</div>
+                          </div>
+                          <div style="display:flex; gap:6px; align-items:center">
+                            ${ws.labour.phone ? `
+                              <a href="${getWhatsAppLink(ws.labour.phone, slipMsg)}" target="_blank" class="btn btn-wa btn-xs" title="Send Site Wage Slip">
+                                💬 Slip
+                              </a>
+                            ` : ''}
+                          </div>
+                        </div>
+
+                        <div class="proj-labour-metrics">
+                          <div class="proj-labour-stat">
+                            <span class="lbl">Days on Site</span>
+                            <strong>${ws.daysWorked} Days</strong>
+                          </div>
+                          <div class="proj-labour-stat">
+                            <span class="lbl">Earned on Site</span>
+                            <strong class="spend-color">${formatCurrency(ws.earned, currency)}</strong>
+                          </div>
+                          <div class="proj-labour-stat">
+                            <span class="lbl">Site Balance</span>
+                            <strong class="${ws.balanceDue > 0 ? 'text-amber' : 'income-color'}">${formatCurrency(ws.balanceDue, currency)}</strong>
+                          </div>
+                        </div>
+
+                        <!-- Quick Days Increment Strip -->
+                        <div class="quick-days-strip">
+                          <span class="text-xs text-muted font-bold">Quick Add:</span>
+                          <button type="button" class="btn-day-increment btn-quick-add-days" data-lab-id="${ws.labour.id}" data-days="1">+1 Day</button>
+                          <button type="button" class="btn-day-increment btn-quick-add-days" data-lab-id="${ws.labour.id}" data-days="5">+5 Days</button>
+                          <button type="button" class="btn-day-increment btn-quick-add-days" data-lab-id="${ws.labour.id}" data-days="10">+10 Days</button>
+                          <button type="button" class="btn-day-increment btn-custom-add-days" data-lab-id="${ws.labour.id}" data-name="${ws.labour.name}" data-rate="${ws.labour.wageRate}">+ Custom Days</button>
+                        </div>
+                      </div>
+                    `;
+                  }).join('')}
+                </div>
+              `}
+
+              <!-- Activity Log of Days -->
+              ${labourStats.projectEffortLogs.length > 0 ? `
+                <div style="margin-top:14px">
+                  <h4 class="drawer-section-title" style="font-size:0.78rem">📋 Site Effort Activity (${labourStats.projectEffortLogs.length} logs)</h4>
+                  <div class="mat-list-items">
+                    ${labourStats.projectEffortLogs.slice(0, 8).map(log => `
+                      <div class="att-row-item">
+                        <div>
+                          <strong>${log.labourName}</strong> (${log.labourRole})
+                          <div class="text-muted text-xs">${formatDate(log.date)} • <strong>${log.days} day(s)</strong> (${currency}${log.earned})</div>
+                          ${log.notes ? `<div class="text-muted text-xs font-italic">${log.notes}</div>` : ''}
+                        </div>
+                        <button class="btn-delete-item btn-del-proj-effort" data-lab-id="${log.labourId}" data-att-id="${log.id}" title="Remove Effort Log">🗑️</button>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              ` : ''}
+            </div>
           </div>
+
+          <!-- ACCORDION 2: MATERIALS SOLD / USED -->
+          <div class="proj-accordion-card ${defaultExpanded === 'materials' ? 'expanded' : ''}" id="acc-card-materials">
+            <button type="button" class="proj-accordion-header" data-target="acc-card-materials">
+              <div class="proj-accordion-title-wrap">
+                <span class="proj-accordion-icon">🧱</span>
+                <span class="proj-accordion-title">Materials Sold / Used</span>
+                <span class="proj-accordion-badge">${project.materials ? project.materials.length : 0} Items • ${formatCurrency(fin.materialsTotal, currency)}</span>
+              </div>
+              <svg class="proj-accordion-chevron" viewBox="0 0 24 24" fill="none" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+
+            <div class="proj-accordion-content">
+              <div class="section-header-flex" style="margin-bottom:10px">
+                <span class="text-xs text-muted">Bricks, steel, cement, sand, aggregates, etc.</span>
+                <button class="btn btn-primary btn-xs" id="btn-add-project-material">+ Add Material</button>
+              </div>
+
+              <div class="material-items-table-wrap">
+                ${(!project.materials || project.materials.length === 0) ? `
+                  <div class="empty-table-msg">No materials added yet. Tap <strong>"+ Add Material"</strong> to record materials used on this site.</div>
+                ` : `
+                  <div class="mat-list-items">
+                    ${project.materials.map(m => `
+                      <div class="mat-row-item">
+                        <div class="mat-row-left">
+                          <strong class="mat-name-txt">${m.name}</strong>
+                          <div class="mat-rate-txt">${formatNumber(m.quantity)} ${m.unit} × ${formatCurrency(m.rate, currency)}</div>
+                        </div>
+                        <div class="mat-row-right">
+                          <strong class="mat-total-txt">${formatCurrency(m.total, currency)}</strong>
+                          <button class="btn-delete-item btn-del-material" data-mat-id="${m.id}" title="Remove Material">🗑️</button>
+                        </div>
+                      </div>
+                    `).join('')}
+                    <div class="mat-row-summary">
+                      <span>Total Materials Value:</span>
+                      <strong>${formatCurrency(fin.materialsTotal, currency)}</strong>
+                    </div>
+                  </div>
+                `}
+              </div>
+            </div>
+          </div>
+
+          <!-- ACCORDION 3: MONEY COLLECTED (INCOME) -->
+          <div class="proj-accordion-card ${defaultExpanded === 'payments' ? 'expanded' : ''}" id="acc-card-payments">
+            <button type="button" class="proj-accordion-header" data-target="acc-card-payments">
+              <div class="proj-accordion-title-wrap">
+                <span class="proj-accordion-icon">💰</span>
+                <span class="proj-accordion-title">Money Collected (Income)</span>
+                <span class="proj-accordion-badge income-color">+${formatCurrency(fin.totalCollected, currency)}</span>
+              </div>
+              <svg class="proj-accordion-chevron" viewBox="0 0 24 24" fill="none" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+
+            <div class="proj-accordion-content">
+              <div class="section-header-flex" style="margin-bottom:10px">
+                <span class="text-xs text-muted">Customer advance receipts & milestone payments</span>
+                <button class="btn btn-secondary btn-xs" id="btn-record-proj-payment">+ Collect Money</button>
+              </div>
+
+              <div class="payments-items-wrap">
+                ${(!project.payments || project.payments.length === 0) ? `
+                  <div class="empty-table-msg">No payments collected yet. Tap <strong>"+ Collect Money"</strong> to record receipts.</div>
+                ` : `
+                  <div class="payment-list-items">
+                    ${project.payments.map(p => `
+                      <div class="payment-row-item">
+                        <div class="pay-row-left">
+                          <div class="pay-date-badge">${formatDate(p.date)}</div>
+                          <div>
+                            <strong class="income-color">+${formatCurrency(p.amount, currency)}</strong>
+                            <span class="pay-mode-pill">${p.mode}</span>
+                          </div>
+                          ${p.notes ? `<p class="pay-notes-text">${p.notes}</p>` : ''}
+                        </div>
+                        <div class="pay-row-right">
+                          <button class="btn-delete-item btn-del-payment" data-pay-id="${p.id}" title="Delete Payment">🗑️</button>
+                        </div>
+                      </div>
+                    `).join('')}
+                    <div class="mat-row-summary">
+                      <span>Total Income from Project:</span>
+                      <strong class="income-color">${formatCurrency(fin.totalCollected, currency)}</strong>
+                    </div>
+                  </div>
+                `}
+              </div>
+            </div>
+          </div>
+
+          <!-- ACCORDION 4: PROJECT SETTINGS & STATUS -->
+          <div class="proj-accordion-card ${defaultExpanded === 'settings' ? 'expanded' : ''}" id="acc-card-settings">
+            <button type="button" class="proj-accordion-header" data-target="acc-card-settings">
+              <div class="proj-accordion-title-wrap">
+                <span class="proj-accordion-icon">⚙️</span>
+                <span class="proj-accordion-title">Project Status & Delete</span>
+              </div>
+              <svg class="proj-accordion-chevron" viewBox="0 0 24 24" fill="none" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+
+            <div class="proj-accordion-content">
+              <div class="drawer-section">
+                <h4 class="drawer-section-title">Change Project Status</h4>
+                <div class="status-buttons-row">
+                  <button class="btn btn-sm ${project.status === 'in_progress' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="in_progress">
+                    In Progress
+                  </button>
+                  <button class="btn btn-sm ${project.status === 'completed' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="completed">
+                    Completed
+                  </button>
+                  <button class="btn btn-sm ${project.status === 'on_hold' ? 'btn-primary' : 'btn-outline'} btn-set-status" data-status="on_hold">
+                    On Hold
+                  </button>
+                </div>
+              </div>
+
+              <div class="sheet-danger-footer">
+                <button class="btn btn-danger btn-sm" id="btn-delete-project">
+                  Delete Project
+                </button>
+              </div>
+            </div>
+          </div>
+
         </div>
       </div>
     `;
 
-    // Tab switching listeners
-    modalContainer.querySelectorAll('.sheet-tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        modalContainer.querySelectorAll('.sheet-tab-btn').forEach(b => b.classList.remove('active'));
-        modalContainer.querySelectorAll('.sheet-tab-pane').forEach(p => p.classList.remove('active'));
-        btn.classList.add('active');
-        modalContainer.querySelector(`#${btn.dataset.pane}`)?.classList.add('active');
+    // Accordion Header Click Toggle Handler
+    modalContainer.querySelectorAll('.proj-accordion-header').forEach(header => {
+      header.addEventListener('click', () => {
+        const cardId = header.dataset.target;
+        const targetCard = modalContainer.querySelector(`#${cardId}`);
+        const isCurrentlyExpanded = targetCard.classList.contains('expanded');
+
+        // Collapse all cards and expand selected
+        modalContainer.querySelectorAll('.proj-accordion-card').forEach(c => c.classList.remove('expanded'));
+        if (!isCurrentlyExpanded) {
+          targetCard.classList.add('expanded');
+        }
+      });
+    });
+
+    // Quick Add Days (+1d, +5d, +10d)
+    modalContainer.querySelectorAll('.btn-quick-add-days').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const labId = btn.dataset.labId;
+        const days = Number(btn.dataset.days) || 1;
+        store.quickIncrementWorkerDays(projectId, labId, days);
+        showToast(`Added +${days} day(s) effort for worker!`);
+        openProjectDetailsModal(projectId, 'labours');
+      });
+    });
+
+    // Custom Days Add
+    modalContainer.querySelectorAll('.btn-custom-add-days').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openProjectEffortModal(projectId, btn.dataset.labId);
       });
     });
 
@@ -2133,8 +2232,8 @@
     openModal('project-details-modal');
   }
 
-  // --- LOG PROJECT LABOUR EFFORT MODAL ---
-  function openProjectEffortModal(projectId) {
+  // --- LOG PROJECT LABOUR EFFORT MODAL (SUPPORTS MULTIPLE DAYS & CONTRACTS) ---
+  function openProjectEffortModal(projectId, prefillLabourId = '') {
     const project = store.getProjectById(projectId);
     if (!project) return;
 
@@ -2143,11 +2242,12 @@
 
     const labours = store.getLabours();
     const currency = store.getSettings().currency || '₹';
+    const prefillWorker = prefillLabourId ? store.getLabourById(prefillLabourId) : (labours.length > 0 ? labours[0] : null);
 
     container.innerHTML = `
       <div class="modal-header">
         <div>
-          <h3 class="modal-title">Log Worker Effort on Site</h3>
+          <h3 class="modal-title">Log Worker Days / Effort</h3>
           <p class="text-muted text-xs">Project: ${project.name}</p>
         </div>
         <button class="modal-close-btn" data-close-modal="log-labour-modal" aria-label="Close">×</button>
@@ -2156,15 +2256,15 @@
       <form id="form-log-project-effort" class="modal-form">
         <div class="form-group">
           <label class="form-label">Worker *</label>
-          <div style="display:flex; gap:8px">
-            <select id="peffort-labour-id" class="form-select" style="flex:1" required>
-              <option value="">-- Choose Existing Worker --</option>
-              ${labours.map(l => `
-                <option value="${l.id}">${l.name} (${l.role} - ${currency}${l.wageRate}/day)</option>
-              `).join('')}
-              <option value="__new__">+ Add New Worker</option>
-            </select>
-          </div>
+          <select id="peffort-labour-id" class="form-select" required>
+            <option value="">-- Choose Existing Worker --</option>
+            ${labours.map(l => `
+              <option value="${l.id}" ${(l.id === prefillLabourId || (!prefillLabourId && l === prefillWorker)) ? 'selected' : ''}>
+                ${l.name} (${l.role} - ${currency}${l.wageRate}/day)
+              </option>
+            `).join('')}
+            <option value="__new__">+ Add New Worker</option>
+          </select>
         </div>
 
         <div id="new-worker-quick-fields" style="display:none; background:var(--bg-subtle); padding:10px; border-radius:var(--radius-md); margin-bottom:12px">
@@ -2180,42 +2280,95 @@
               </select>
             </div>
             <div class="form-group">
-              <label class="form-label">Daily Wage (${currency}) *</label>
+              <label class="form-label">Daily Wage Rate (${currency}) *</label>
               <input type="number" step="any" id="peffort-new-rate" class="form-input font-bold" placeholder="e.g. 900" />
             </div>
           </div>
         </div>
 
+        <div class="form-group">
+          <label class="form-label">Number of Days / Shifts Worked *</label>
+          <div class="quick-preset-chips" style="margin-bottom:6px">
+            <button type="button" class="chip-btn chip-days-preset" data-days="1">1 Day</button>
+            <button type="button" class="chip-btn chip-days-preset" data-days="7">7 Days (1 Wk)</button>
+            <button type="button" class="chip-btn chip-days-preset" data-days="15">15 Days</button>
+            <button type="button" class="chip-btn chip-days-preset" data-days="30">30 Days (1 Mo)</button>
+          </div>
+          <input 
+            type="number" 
+            step="any" 
+            id="peffort-days" 
+            class="form-input form-input-lg font-bold" 
+            placeholder="e.g. 15 or 30 days" 
+            value="1" 
+            required 
+            autofocus 
+          />
+        </div>
+
         <div class="form-row-2">
           <div class="form-group">
-            <label class="form-label">Work Date *</label>
-            <input type="date" id="peffort-date" class="form-input" value="${getTodayDateString()}" required />
+            <label class="form-label">Wage Rate / Day (${currency}) *</label>
+            <input 
+              type="number" 
+              step="any" 
+              id="peffort-rate" 
+              class="form-input font-bold" 
+              value="${prefillWorker ? prefillWorker.wageRate : 850}" 
+              required 
+            />
           </div>
           <div class="form-group">
-            <label class="form-label">Effort / Status *</label>
-            <select id="peffort-status" class="form-select">
-              <option value="full_day">Full Day (1.0 day)</option>
-              <option value="half_day">Half Day (0.5 day)</option>
-              <option value="overtime">Overtime (1.5 day)</option>
-              <option value="absent">Absent (0.0 day)</option>
-            </select>
+            <label class="form-label">Calculated Wages Cost</label>
+            <input 
+              type="text" 
+              id="peffort-total-preview" 
+              class="form-input font-bold spend-color" 
+              readonly 
+            />
           </div>
         </div>
 
-        <div class="form-group">
-          <label class="form-label">Work Done / Task Description</label>
-          <input type="text" id="peffort-notes" class="form-input" placeholder="e.g. 2nd floor column casting, brick laying..." />
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">Date Logged</label>
+            <input type="date" id="peffort-date" class="form-input" value="${getTodayDateString()}" required />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Task / Description</label>
+            <input type="text" id="peffort-notes" class="form-input" placeholder="e.g. Brick work, plastering, 2nd slab" />
+          </div>
         </div>
 
         <div class="modal-footer-btns">
           <button type="button" class="btn btn-outline" data-close-modal="log-labour-modal">Cancel</button>
-          <button type="submit" class="btn btn-primary">Save Effort Log</button>
+          <button type="submit" class="btn btn-primary">Save Days & Add to Site</button>
         </div>
       </form>
     `;
 
     const labSelect = container.querySelector('#peffort-labour-id');
     const newFields = container.querySelector('#new-worker-quick-fields');
+    const daysInput = container.querySelector('#peffort-days');
+    const rateInput = container.querySelector('#peffort-rate');
+    const totalPreview = container.querySelector('#peffort-total-preview');
+
+    function calculatePreview() {
+      const d = Number(daysInput.value) || 0;
+      const r = Number(rateInput.value) || 0;
+      totalPreview.value = formatCurrency(Math.round(d * r), currency);
+    }
+
+    daysInput.addEventListener('input', calculatePreview);
+    rateInput.addEventListener('input', calculatePreview);
+    calculatePreview();
+
+    container.querySelectorAll('.chip-days-preset').forEach(chip => {
+      chip.addEventListener('click', () => {
+        daysInput.value = chip.dataset.days;
+        calculatePreview();
+      });
+    });
 
     labSelect.addEventListener('change', () => {
       if (labSelect.value === '__new__') {
@@ -2223,6 +2376,11 @@
         container.querySelector('#peffort-new-name').focus();
       } else {
         newFields.style.display = 'none';
+        const chosen = store.getLabourById(labSelect.value);
+        if (chosen) {
+          rateInput.value = chosen.wageRate || 0;
+          calculatePreview();
+        }
       }
     });
 
@@ -2230,10 +2388,13 @@
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       let targetLabourId = labSelect.value;
+      const days = Number(daysInput.value) || 1;
+      const rate = Number(rateInput.value) || 0;
+      const totalCost = Math.round(days * rate);
 
       if (targetLabourId === '__new__') {
         const newName = container.querySelector('#peffort-new-name').value.trim();
-        const newRate = Number(container.querySelector('#peffort-new-rate').value) || 0;
+        const newRate = Number(container.querySelector('#peffort-new-rate').value) || rate;
         const newRole = container.querySelector('#peffort-new-role').value;
 
         if (!newName || newRate <= 0) {
@@ -2256,18 +2417,20 @@
       }
 
       const date = container.querySelector('#peffort-date').value;
-      const status = container.querySelector('#peffort-status').value;
       const notes = container.querySelector('#peffort-notes').value.trim();
 
       store.logLabourAttendance(targetLabourId, {
         date: date,
-        status: status,
+        days: days,
+        rate: rate,
+        totalCost: totalCost,
+        status: days > 1 ? 'multi_days' : 'full_day',
         projectId: projectId,
         notes: notes
       });
 
       closeModal('log-labour-modal');
-      showToast('Worker effort logged on project!');
+      showToast(`Logged ${days} day(s) effort for worker on project!`);
       openProjectDetailsModal(projectId, 'labours');
     });
 
@@ -3509,7 +3672,7 @@
 
                 ${lastAtt ? `
                   <div class="last-attendance-badge">
-                    <span>Last Log: <strong>${formatDate(lastAtt.date)}</strong> (${lastAtt.status.replace('_', ' ')})</span>
+                    <span>Last Log: <strong>${formatDate(lastAtt.date)}</strong> (${lastAtt.days || 1}d - ${lastAtt.status.replace('_', ' ')})</span>
                   </div>
                 ` : ''}
 
@@ -3663,7 +3826,7 @@
     openModal('log-labour-modal');
   }
 
-  // --- LOG ATTENDANCE MODAL ---
+  // --- LOG ATTENDANCE MODAL (GLOBAL) ---
   function openLogAttendanceModal(prefillLabourId = null) {
     const container = document.getElementById('log-labour-modal-content');
     if (!container) return;
@@ -3681,7 +3844,7 @@
       <div class="modal-header">
         <div>
           <h3 class="modal-title">Mark Worker Attendance & Efforts</h3>
-          <p class="text-muted text-xs">Log daily work presence and site allocation</p>
+          <p class="text-muted text-xs">Log daily or multi-day work presence and site allocation</p>
         </div>
         <button class="modal-close-btn" data-close-modal="log-labour-modal" aria-label="Close">×</button>
       </div>
@@ -3700,17 +3863,12 @@
 
         <div class="form-row-2">
           <div class="form-group">
-            <label class="form-label">Attendance Date *</label>
-            <input type="date" id="att-date" class="form-input" value="${getTodayDateString()}" required />
+            <label class="form-label">Number of Days / Shifts *</label>
+            <input type="number" step="any" id="att-days" class="form-input font-bold" value="1" required />
           </div>
           <div class="form-group">
-            <label class="form-label">Day Status *</label>
-            <select id="att-status" class="form-select">
-              <option value="full_day">Full Day (1.0 day)</option>
-              <option value="half_day">Half Day (0.5 day)</option>
-              <option value="overtime">Overtime (1.5 day)</option>
-              <option value="absent">Absent (0.0 day)</option>
-            </select>
+            <label class="form-label">Attendance Date *</label>
+            <input type="date" id="att-date" class="form-input" value="${getTodayDateString()}" required />
           </div>
         </div>
 
@@ -3739,13 +3897,14 @@
       e.preventDefault();
       const labId = container.querySelector('#att-labour-id').value;
       const attDate = container.querySelector('#att-date').value;
-      const status = container.querySelector('#att-status').value;
+      const days = Number(container.querySelector('#att-days').value) || 1;
       const projId = container.querySelector('#att-project-id').value;
       const notes = container.querySelector('#att-notes').value.trim();
 
       store.logLabourAttendance(labId, {
         date: attDate,
-        status: status,
+        days: days,
+        status: days > 1 ? 'multi_days' : 'full_day',
         projectId: projId,
         notes: notes
       });
@@ -3968,7 +4127,7 @@
                 <div class="att-row-item">
                   <div>
                     <strong>${formatDate(a.date)}</strong>
-                    <span class="status-tag status-att-${a.status}">${a.status.replace('_', ' ')}</span>
+                    <span class="status-tag status-att-${a.status}">${a.days || 1}d (${a.status.replace('_', ' ')})</span>
                     <div class="text-muted text-xs">
                       ${p ? `📍 ${p.name}` : '🛠️ Outside Projects'}
                       ${a.notes ? ` • ${a.notes}` : ''}
@@ -4224,7 +4383,7 @@
         <div class="settings-section-card">
           <h4 class="settings-card-title">📱 App Information & Quick Reset</h4>
           <div class="app-info-row">
-            <span>Version: <strong>BuilderMate v1.0.5</strong></span>
+            <span>Version: <strong>BuilderMate v1.0.6</strong></span>
             <span class="status-pill pill-green">Cloud & Offline Ready</span>
           </div>
           
@@ -4368,9 +4527,8 @@
           wageRate: 900
         });
 
-        store.logLabourAttendance(lab1.id, { date: '2026-08-14', status: 'full_day', projectId: sampleProj.id, notes: 'Ground floor brick laying' });
-        store.logLabourAttendance(lab1.id, { date: '2026-08-15', status: 'full_day', projectId: sampleProj.id, notes: 'Column centering' });
-        store.addLabourPayout(lab1.id, { amount: 1500, type: 'Daily Wage', mode: 'Cash', projectId: sampleProj.id });
+        store.logLabourAttendance(lab1.id, { date: '2026-08-14', days: 12, rate: 900, totalCost: 10800, projectId: sampleProj.id, notes: 'Ground floor brick masonry & centering (12 days)' });
+        store.addLabourPayout(lab1.id, { amount: 5000, type: 'Site Wage', mode: 'Cash', projectId: sampleProj.id });
 
         showToast('Sample demo data loaded!');
         closeModal('settings-modal');

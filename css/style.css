@@ -1602,45 +1602,116 @@ body.modal-open {
   margin-bottom: 8px;
 }
 
-.sheet-tabs-nav {
+/* Project Details Accordion Dropdown Sections */
+.project-accordions-group {
   display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding: 4px 0 10px 0;
-  margin-bottom: 14px;
-  border-bottom: 1px solid var(--border-subtle);
-  scrollbar-width: none;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
 }
 
-.sheet-tabs-nav::-webkit-scrollbar {
-  display: none;
-}
-
-.sheet-tab-btn {
-  padding: 6px 12px;
-  font-size: 0.78rem;
-  font-weight: 700;
-  border-radius: var(--radius-full);
+.proj-accordion-card {
+  background-color: var(--bg-surface);
   border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.proj-accordion-card.expanded {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.proj-accordion-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
   background-color: var(--bg-subtle);
-  color: var(--text-secondary);
+  border: none;
   cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s ease;
+  text-align: left;
+  user-select: none;
+  transition: background-color 0.15s ease;
 }
 
-.sheet-tab-btn.active {
-  background-color: var(--brand-accent);
-  color: #ffffff;
-  border-color: var(--brand-accent);
+.proj-accordion-header:hover {
+  background-color: var(--bg-muted);
 }
 
-.sheet-tab-pane {
+.proj-accordion-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.proj-accordion-icon {
+  font-size: 1.15rem;
+}
+
+.proj-accordion-title {
+  font-size: 0.875rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.proj-accordion-badge {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background-color: var(--bg-muted);
+  color: var(--text-secondary);
+}
+
+.proj-accordion-chevron {
+  width: 18px;
+  height: 18px;
+  stroke: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+
+.proj-accordion-card.expanded .proj-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.proj-accordion-content {
   display: none;
+  padding: 14px;
+  background-color: var(--bg-surface);
+  border-top: 1px solid var(--border-subtle);
 }
 
-.sheet-tab-pane.active {
+.proj-accordion-card.expanded .proj-accordion-content {
   display: block;
+}
+
+/* Quick Days Increment Buttons */
+.quick-days-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-day-increment {
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--bg-muted);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.btn-day-increment:active {
+  background-color: var(--brand-accent);
+  color: #fff;
 }
 
 /* Project Labours & Efforts Cards */
