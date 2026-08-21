@@ -107,6 +107,15 @@
         <span class="nav-label">Inventory</span>
       </button>
 
+      <button class="bottom-nav-item" data-tab="vehicles">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+          <circle cx="6" cy="18" r="3"/>
+          <circle cx="18" cy="18" r="3"/>
+          <path d="M6 15h12M9 15V9h7l3 6M9 9l-4 6"/>
+        </svg>
+        <span class="nav-label">Vehicles</span>
+      </button>
+
       <button class="bottom-nav-item" data-tab="direct-sales">
         <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
           <circle cx="9" cy="21" r="1"/>
@@ -146,7 +155,7 @@
       </div>
       <form id="form-onboarding" class="modal-form">
         <p class="text-sm text-secondary" style="margin-bottom: 14px;">
-          BuilderMate tracks your site inventory, material spends, customer payments, direct sales, and labour wages on your mobile phone.
+          BuilderMate tracks your site inventory, material spends, customer payments, direct sales, vehicle machinery, and labour wages on your mobile phone.
         </p>
 
         <div class="form-group">
@@ -285,53 +294,74 @@
   <!-- 3. Project Details Full Modal -->
   <div id="project-details-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="project-details-modal-content">
-      <!-- Injected by js/components/projects.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
   <!-- 4. Add Material to Project Modal -->
   <div id="add-material-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="add-material-modal-content">
-      <!-- Injected by js/components/projects.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
   <!-- 5. Record Payment Modal -->
   <div id="record-payment-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="record-payment-modal-content">
-      <!-- Injected by js/components/projects.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
   <!-- 6. Buy Inventory Stock Modal -->
   <div id="buy-inventory-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="buy-inventory-modal-content">
-      <!-- Injected by js/components/inventory.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
   <!-- 7. Inventory History Modal -->
   <div id="inventory-history-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="inventory-history-modal-content">
-      <!-- Injected by js/components/inventory.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
   <!-- 8. Direct Sale Modal -->
   <div id="direct-sale-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="direct-sale-modal-content">
-      <!-- Injected by js/components/directSales.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
   <!-- 9. Log Labour / Attendance / Payout Modal -->
   <div id="log-labour-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="log-labour-modal-content">
-      <!-- Injected by js/components/labours.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
-  <!-- 10. Quick Add Action Sheet -->
+  <!-- 10. Vehicles & Machinery Modal -->
+  <div id="vehicle-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="vehicle-modal-content">
+      <!-- Injected by JS -->
+    </div>
+  </div>
+
+  <!-- 11. Project Phase Photo Upload Modal -->
+  <div id="project-photo-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="project-photo-modal-content">
+      <!-- Injected by JS -->
+    </div>
+  </div>
+
+  <!-- 12. Full-Screen Photo Lightbox Modal -->
+  <div id="photo-lightbox-modal" class="modal-overlay">
+    <div class="modal-sheet-container" id="photo-lightbox-modal-content" style="background:#090d16">
+      <!-- Injected by JS -->
+    </div>
+  </div>
+
+  <!-- 13. Quick Add Action Sheet -->
   <div id="quick-add-action-sheet" class="modal-overlay">
     <div class="modal-sheet-container">
       <div class="modal-header">
@@ -349,6 +379,11 @@
           <span class="as-title">Buy Stock</span>
           <span class="as-desc">Record material purchase (Spend)</span>
         </div>
+        <div class="action-sheet-item" data-action="log-vehicle">
+          <span class="as-icon">🚜</span>
+          <span class="as-title">Vehicle / Machine</span>
+          <span class="as-desc">Dispatch JCB, Tipper, Tractor</span>
+        </div>
         <div class="action-sheet-item" data-action="direct-sale">
           <span class="as-icon">🛒</span>
           <span class="as-title">Direct Sale</span>
@@ -357,16 +392,16 @@
         <div class="action-sheet-item" data-action="add-labour">
           <span class="as-icon">👷</span>
           <span class="as-title">Labour & Wages</span>
-          <span class="as-desc">Attendance, wage payouts & workers</span>
+          <span class="as-desc">Attendance, gang effort & payouts</span>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 11. Settings & Backup Modal -->
+  <!-- 14. Settings & Backup Modal -->
   <div id="settings-modal" class="modal-overlay">
     <div class="modal-sheet-container" id="settings-modal-content">
-      <!-- Injected by js/components/settings.js -->
+      <!-- Injected by JS -->
     </div>
   </div>
 
